@@ -248,28 +248,28 @@ PM 與用戶溝通 → 在 [User-PM] Thread 回覆用戶
 ```jsonc
 {
   "bindings": [
-    // ── Main Agent：監聯 #general 文字頻道（日常對話 + 專案創建）──
+    // ── Main Agent：監聽 #general 文字頻道（日常對話 + 專案創建）──
     {
       "agentId": "main",
-      "comment": "Main 監聽 #general，處理日常對話和專案創建",
+      "comment": "Main Bot 監聽 #general",
       "match": {
         "channel": "discord",
+        "accountId": "main",               // 指定 main bot account
         "guildId": "YOUR_GUILD_ID",
         "peer": {
           "kind": "channel",
-          "id": "GENERAL_CHANNEL_ID"       // #general 的 ID
+          "id": "GENERAL_CHANNEL_ID"
         }
       }
     },
 
-    // ── 全局 Fallback ──
-    // Forum Thread 的路由由 Thread Binding 動態管理
-    // 不需要為每個 Forum 設定靜態 binding
+    // ── Main Bot Fallback ──
     {
       "agentId": "main",
-      "comment": "其他頻道預設由 Main 處理",
+      "comment": "main bot fallback",
       "match": {
         "channel": "discord",
+        "accountId": "main",
         "guildId": "YOUR_GUILD_ID"
       }
     }
@@ -279,39 +279,68 @@ PM 與用戶溝通 → 在 [User-PM] Thread 回覆用戶
 
 > **注意**：各專案 Forum 下的 Thread 路由完全由 Thread Binding 動態管理。
 > `project_init` tool 在建立 Thread 時自動設定 binding，不需要靜態配置。
+> Binding 的 `accountId` 對應 `channels.discord.accounts` 中的 key。
 
 ### Step 3：Discord Channel 設定
 
 ```jsonc
 {
+  // ── 4 個獨立 Discord Bot，每個 Agent 一個 ──
+  // 好處：獨立 username/avatar、打字指示器、session 天然隔離
   "channels": {
     "discord": {
-      "accounts": [
-        {
-          "accountId": "discord",
-          "token": "YOUR_BOT_TOKEN",
+      "groupPolicy": "open",
+      "defaultAccount": "main",
+      "accounts": {
+        "main": {
+          "name": "Main Bot",
+          "token": "DISCORD_BOT_TOKEN_MAIN",
           "enabled": true,
-          "config": {
-            "groupPolicy": "allowlist",
-            "guilds": {
-              "YOUR_GUILD_ID": {
-                "channels": {
-                  "GENERAL_CHANNEL_ID": {}  // #general
-                  // Forum Channel 由 project_init 動態建立
-                  // 需確認動態建立的頻道是否自動加入 allowlist
-                  // 或改用 "groupPolicy": "none" 允許所有頻道
-                }
-              }
-            },
-            "replyToMode": "thread",
-            "conversationBindings": {
-              "enabled": true,
-              "idleTimeoutMs": 604800000,    // 7 天
-              "maxAgeMs": 2592000000         // 30 天
-            }
+          "guilds": { "YOUR_GUILD_ID": {} },
+          "threadBindings": {
+            "enabled": true,
+            "idleHours": 168,
+            "maxAgeHours": 720,
+            "spawnSubagentSessions": true
+          }
+        },
+        "pm": {
+          "name": "PM Bot",
+          "token": "DISCORD_BOT_TOKEN_PM",
+          "enabled": true,
+          "guilds": { "YOUR_GUILD_ID": {} },
+          "threadBindings": {
+            "enabled": true,
+            "idleHours": 168,
+            "maxAgeHours": 720,
+            "spawnSubagentSessions": true
+          }
+        },
+        "dev": {
+          "name": "Dev Bot",
+          "token": "DISCORD_BOT_TOKEN_DEV",
+          "enabled": true,
+          "guilds": { "YOUR_GUILD_ID": {} },
+          "threadBindings": {
+            "enabled": true,
+            "idleHours": 168,
+            "maxAgeHours": 720,
+            "spawnSubagentSessions": true
+          }
+        },
+        "cicd": {
+          "name": "CICD Bot",
+          "token": "DISCORD_BOT_TOKEN_CICD",
+          "enabled": true,
+          "guilds": { "YOUR_GUILD_ID": {} },
+          "threadBindings": {
+            "enabled": true,
+            "idleHours": 168,
+            "maxAgeHours": 720,
+            "spawnSubagentSessions": true
           }
         }
-      ]
+      }
     }
   },
 
@@ -662,19 +691,20 @@ export default {
         });
 
         // ── 3. 構造 Session Key ──
+        // 每個 agent 使用對應的 accountId（pm/dev/cicd）
 
         const pmSessionKey =
-          `agent:pm:discord:${accountId}:channel:${userPmThread.id}`;
+          `agent:pm:discord:pm:channel:${userPmThread.id}`;
         const devSessionKey =
-          `agent:dev:discord:${accountId}:channel:${pmDevThread.id}`;
+          `agent:dev:discord:dev:channel:${pmDevThread.id}`;
         const cicdSessionKey =
-          `agent:cicd:discord:${accountId}:channel:${devCicdThread.id}`;
+          `agent:cicd:discord:cicd:channel:${devCicdThread.id}`;
 
         // ── 4. 建立 Thread Binding ──
+        // 每個 thread 綁定到對應 agent 的 bot account
 
-        const bindingManager = ctx.discord.getThreadBindingManager(accountId);
-
-        await bindingManager.bindTarget({
+        const pmBindingManager = ctx.discord.getThreadBindingManager("pm");
+        await pmBindingManager.bindTarget({
           threadId: userPmThread.id,
           channelId: forumChannelId,
           targetSessionKey: pmSessionKey,
@@ -683,7 +713,8 @@ export default {
           introText: `PM 已就緒，等待用戶需求。`,
         });
 
-        await bindingManager.bindTarget({
+        const devBindingManager = ctx.discord.getThreadBindingManager("dev");
+        await devBindingManager.bindTarget({
           threadId: pmDevThread.id,
           channelId: forumChannelId,
           targetSessionKey: devSessionKey,
@@ -692,7 +723,8 @@ export default {
           introText: `Dev 已就緒，等待 PM 派發任務。`,
         });
 
-        await bindingManager.bindTarget({
+        const cicdBindingManager = ctx.discord.getThreadBindingManager("cicd");
+        await cicdBindingManager.bindTarget({
           threadId: devCicdThread.id,
           channelId: forumChannelId,
           targetSessionKey: cicdSessionKey,
@@ -701,11 +733,7 @@ export default {
           introText: `CI/CD 已就緒，等待 Dev 派發建置請求。`,
         });
 
-        // ── 5. 將新建的 Forum Channel 加入 allowlist ──
-        // （如果使用 groupPolicy: "allowlist"，需要動態更新）
-        // 或考慮使用 groupPolicy: "none" 避免此問題
-
-        // ── 6. 回傳結果 ──
+        // ── 5. 回傳結果 ──
 
         return {
           status: "ok",
@@ -956,16 +984,16 @@ Phase 5: 進度匯報（回到 User-PM thread）
 Thread IDs: T1001, T1002, T1003          Thread IDs: T2001, T2002, T2003
 ┌──────────────────────────────┐         ┌──────────────────────────────┐
 │                              │         │                              │
-│ PM Session                   │         │ PM Session                   │
-│ key: agent:pm:...:T1001      │         │ key: agent:pm:...:T2001      │
+│ PM Session (account: pm)     │         │ PM Session (account: pm)     │
+│ key: agent:pm:discord:pm:T1001│        │ key: agent:pm:discord:pm:T2001│
 │ bound: [User-PM] thread      │         │ bound: [User-PM] thread      │
 │                              │         │                              │
-│ Dev Session                  │         │ Dev Session                  │
-│ key: agent:dev:...:T1002     │         │ key: agent:dev:...:T2002     │
+│ Dev Session (account: dev)   │         │ Dev Session (account: dev)   │
+│ key: agent:dev:discord:dev:T1002│      │ key: agent:dev:discord:dev:T2002│
 │ bound: [PM-Dev] thread       │         │ bound: [PM-Dev] thread       │
 │                              │         │                              │
-│ CICD Session                 │         │ CICD Session                 │
-│ key: agent:cicd:...:T1003    │         │ key: agent:cicd:...:T2003    │
+│ CICD Session (account: cicd) │         │ CICD Session (account: cicd) │
+│ key: agent:cicd:discord:cicd:T1003│    │ key: agent:cicd:discord:cicd:T2003│
 │ bound: [Dev-CICD] thread     │         │ bound: [Dev-CICD] thread     │
 │                              │         │                              │
 └──────────────────────────────┘         └──────────────────────────────┘
@@ -1016,7 +1044,7 @@ Thread IDs: T1001, T1002, T1003          Thread IDs: T2001, T2002, T2003
 1. 建立 Plugin 目錄和 manifest
 2. 實作 `project_init` tool（建立 Forum Channel + 3 Threads + Thread Binding）
 3. 測試 Forum Channel 動態建立
-4. 確認動態建立的 Channel 能被 Bot 監聽（allowlist 或 groupPolicy 設定）
+4. 確認動態建立的 Forum Channel 能被 Bot 監聽（`groupPolicy: "open"`）
 
 ### Phase 3：驗證核心流程
 1. 在 `#general` 測試 Main Agent 日常對話
@@ -1038,8 +1066,7 @@ Thread IDs: T1001, T1002, T1003          Thread IDs: T2001, T2002, T2003
 ## 注意事項與限制
 
 1. **Bot 權限**：Main Agent 需要「管理頻道」權限才能動態建立 Forum Channel
-2. **Channel Allowlist**：如使用 `groupPolicy: "allowlist"`，動態建立的 Forum Channel
-   需要自動加入 allowlist，或改用 `groupPolicy: "none"`
+2. **groupPolicy**：使用 `"open"` 讓 Bot 自動監聯動態建立的 Forum Channel
 3. **`sessions_send` 輪次限制**：預設 5 輪 ping-pong，長期專案需調整
 4. **Thread Binding 過期**：建議設 `maxAgeMs` 至少 30 天，長期專案需更大
 5. **Session Key 傳遞**：Agent 需在訊息中包含目標 Agent 的 session key，

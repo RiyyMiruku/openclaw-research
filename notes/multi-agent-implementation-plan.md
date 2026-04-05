@@ -9,11 +9,18 @@
 
 | 項目 | 值 | 說明 |
 |------|---|------|
-| Discord Server | 私人 Server | 已建立，Bot 已加入 |
-| Bot Token | `YOUR_BOT_TOKEN` | 需有 `MANAGE_CHANNELS` 權限 |
+| Discord Server | 私人 Server | 已建立，4 個 Bot 都已加入 |
+| Main Bot Token | `DISCORD_BOT_TOKEN_MAIN` | 需有 `MANAGE_CHANNELS` 權限 |
+| PM Bot Token | `DISCORD_BOT_TOKEN_PM` | |
+| Dev Bot Token | `DISCORD_BOT_TOKEN_DEV` | |
+| CICD Bot Token | `DISCORD_BOT_TOKEN_CICD` | |
 | Guild ID | `YOUR_GUILD_ID` | Server Settings → Copy Server ID |
 | #general Channel ID | `GENERAL_CHANNEL_ID` | 現有文字頻道，Main Bot 監聽 |
 | openclaw | 已安裝並可執行 | `openclaw config set ...` 可用 |
+
+> **Discord Bot 建立**：在 [Discord Developer Portal](https://discord.com/developers/applications) 建立 4 個 Application，
+> 各自建立 Bot 並取得 Token。每個 Bot 設定不同的 username 和 avatar 以便辨識。
+> 4 個 Bot 都需要加入同一個私人 Server。
 
 ---
 
@@ -83,45 +90,82 @@
   },
 
   // ═══ 路由綁定 ═══
+  // 每個 binding 指定 accountId，確保訊息由正確的 Bot 接收和路由
   "bindings": [
     {
       "agentId": "main",
-      "comment": "#general → Main Agent",
+      "comment": "#general → Main Agent (via main bot)",
       "match": {
         "channel": "discord",
+        "accountId": "main",
         "guildId": "YOUR_GUILD_ID",
         "peer": { "kind": "channel", "id": "GENERAL_CHANNEL_ID" }
       }
     },
     {
       "agentId": "main",
-      "comment": "Fallback",
-      "match": { "channel": "discord", "guildId": "YOUR_GUILD_ID" }
+      "comment": "main bot fallback",
+      "match": { "channel": "discord", "accountId": "main", "guildId": "YOUR_GUILD_ID" }
     }
   ],
 
-  // ═══ Discord 頻道 ═══
+  // ═══ Discord 頻道（4 個 Bot Account）═══
+  // 每個 Agent 對應一個獨立 Discord Bot，擁有獨立 username / avatar
+  // 好處：視覺身分辨識、獨立打字指示器、session 天然隔離
   "channels": {
     "discord": {
-      "accounts": [
-        {
-          "accountId": "discord",
-          "token": "YOUR_BOT_TOKEN",
+      "groupPolicy": "open",
+      "defaultAccount": "main",
+      "accounts": {
+        "main": {
+          "name": "Main Bot",
+          "token": "DISCORD_BOT_TOKEN_MAIN",
           "enabled": true,
-          "config": {
-            "groupPolicy": "none",
-            "guilds": {
-              "YOUR_GUILD_ID": {}
-            },
-            "replyToMode": "thread",
-            "conversationBindings": {
-              "enabled": true,
-              "idleTimeoutMs": 604800000,
-              "maxAgeMs": 2592000000
-            }
+          "guilds": { "YOUR_GUILD_ID": {} },
+          "threadBindings": {
+            "enabled": true,
+            "idleHours": 168,
+            "maxAgeHours": 720,
+            "spawnSubagentSessions": true
+          }
+        },
+        "pm": {
+          "name": "PM Bot",
+          "token": "DISCORD_BOT_TOKEN_PM",
+          "enabled": true,
+          "guilds": { "YOUR_GUILD_ID": {} },
+          "threadBindings": {
+            "enabled": true,
+            "idleHours": 168,
+            "maxAgeHours": 720,
+            "spawnSubagentSessions": true
+          }
+        },
+        "dev": {
+          "name": "Dev Bot",
+          "token": "DISCORD_BOT_TOKEN_DEV",
+          "enabled": true,
+          "guilds": { "YOUR_GUILD_ID": {} },
+          "threadBindings": {
+            "enabled": true,
+            "idleHours": 168,
+            "maxAgeHours": 720,
+            "spawnSubagentSessions": true
+          }
+        },
+        "cicd": {
+          "name": "CICD Bot",
+          "token": "DISCORD_BOT_TOKEN_CICD",
+          "enabled": true,
+          "guilds": { "YOUR_GUILD_ID": {} },
+          "threadBindings": {
+            "enabled": true,
+            "idleHours": 168,
+            "maxAgeHours": 720,
+            "spawnSubagentSessions": true
           }
         }
-      ]
+      }
     }
   },
 
@@ -133,7 +177,12 @@
 }
 ```
 
-> **`groupPolicy: "none"`**：因為 Forum Channel 是動態建立的，使用 `"none"` 讓 Bot 自動監聽所有頻道，避免需要手動更新 allowlist。
+> **4 個 Bot Account**：每個 Agent 擁有獨立 Discord Bot（獨立 token / username / avatar）。
+> 好處：視覺身分辨識、獨立打字指示器、session key 天然含 accountId 隔離。
+>
+> **`groupPolicy: "open"`**：Forum Channel 動態建立，所有 Bot 自動監聽。
+>
+> **Session Key 格式**：`agent:<agentId>:discord:<accountId>:<threadId>`，accountId 即 Bot account 名稱（main / pm / dev / cicd）。
 
 ---
 
@@ -416,14 +465,15 @@ project_init(projectName, description)
   │     → [Dev-CICD] 建置測試 → devCicdThread.id
   │
   ├─ 3. 構造 Session Key × 3
-  │     → agent:pm:discord:{accountId}:channel:{userPmThread.id}
-  │     → agent:dev:discord:{accountId}:channel:{pmDevThread.id}
-  │     → agent:cicd:discord:{accountId}:channel:{devCicdThread.id}
+  │     → agent:pm:discord:pm:channel:{userPmThread.id}
+  │     → agent:dev:discord:dev:channel:{pmDevThread.id}
+  │     → agent:cicd:discord:cicd:channel:{devCicdThread.id}
+  │       (每個 agent 使用各自的 accountId: pm/dev/cicd)
   │
-  ├─ 4. bindTarget() × 3
-  │     → userPmThread  ↔ PM session
-  │     → pmDevThread   ↔ Dev session
-  │     → devCicdThread ↔ CICD session
+  ├─ 4. getThreadBindingManager(accountId) + bindTarget() × 3
+  │     → pm account manager:   userPmThread  ↔ PM session
+  │     → dev account manager:  pmDevThread   ↔ Dev session
+  │     → cicd account manager: devCicdThread ↔ CICD session
   │
   └─ 5. 回傳 { forumChannelId, threads: { userPm, pmDev, devCicd } }
 ```
@@ -432,24 +482,26 @@ project_init(projectName, description)
 
 ## Step 4：Discord Bot 權限設定
 
-Bot 需要以下 Intent 和權限：
+4 個 Bot 都需要相同的 Intent 和權限。在 Discord Developer Portal 中為每個 Application 設定：
 
-### Gateway Intents
+### Gateway Intents（4 個 Bot 都要開啟）
 - `GUILDS`
 - `GUILD_MESSAGES`
 - `MESSAGE_CONTENT`
 
-### Bot Permissions（整數值加總）
-| 權限 | 用途 |
-|------|------|
-| `MANAGE_CHANNELS` | 動態建立 Forum Channel |
-| `SEND_MESSAGES` | 在頻道發送訊息 |
-| `SEND_MESSAGES_IN_THREADS` | 在 Thread 中發送訊息 |
-| `CREATE_PUBLIC_THREADS` | 在 Forum 中建立 Thread |
-| `READ_MESSAGE_HISTORY` | 讀取歷史訊息 |
-| `MANAGE_THREADS` | 管理 Thread 設定 |
-| `VIEW_CHANNEL` | 檢視頻道 |
-| `MANAGE_WEBHOOKS` | Thread Binding 需要 Webhook |
+### Bot Permissions（4 個 Bot 都要設定）
+| 權限 | 用途 | Main | PM | Dev | CICD |
+|------|------|:----:|:--:|:---:|:----:|
+| `MANAGE_CHANNELS` | 動態建立 Forum Channel | **必要** | - | - | - |
+| `SEND_MESSAGES` | 在頻道發送訊息 | v | v | v | v |
+| `SEND_MESSAGES_IN_THREADS` | 在 Thread 中發送訊息 | v | v | v | v |
+| `CREATE_PUBLIC_THREADS` | 在 Forum 中建立 Thread | v | - | - | - |
+| `READ_MESSAGE_HISTORY` | 讀取歷史訊息 | v | v | v | v |
+| `MANAGE_THREADS` | 管理 Thread 設定 | v | - | - | - |
+| `VIEW_CHANNEL` | 檢視頻道 | v | v | v | v |
+| `MANAGE_WEBHOOKS` | Thread Binding Webhook | v | v | v | v |
+
+> **簡化做法**：4 個 Bot 統一使用相同權限組，避免權限不足問題。
 
 ---
 
@@ -511,6 +563,6 @@ Bot 需要以下 Intent 和權限：
 | Thread 中 Agent 不回應 | Thread Binding 未設定 / 已過期 | 檢查 `bindTarget()` 是否成功 |
 | `sessions_send` 被拒絕 | `agentToAgent.enabled` 未開啟 | 確認 openclaw.json 中的配置 |
 | Agent 回應在錯誤 Thread | Session Key 構造錯誤 | 檢查 `agent:<id>:discord:<account>:channel:<threadId>` 格式 |
-| 動態建立的 Forum 無法監聽 | `groupPolicy: "allowlist"` 未包含新 Channel | 改用 `groupPolicy: "none"` |
+| 動態建立的 Forum 無法監聽 | `groupPolicy` 設定錯誤 | 使用 `groupPolicy: "open"` |
 | Thread Binding 過期 | `maxAgeMs` 太短 | 調大至 2592000000 (30天) 或更長 |
 | 訊息未出現在 Discord | Webhook 未建立 | 確認 Bot 有 `MANAGE_WEBHOOKS` 權限 |
