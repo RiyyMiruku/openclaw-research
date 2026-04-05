@@ -1,7 +1,6 @@
 # 多 Agent Discord Forum - 執行配置計畫
 
-> 參考藍圖：`notes/multi-agent-discord-forum-architecture.md`
-> 本文件為 AI 可直接執行的逐步配置指南
+> 本文件為完整的逐步執行指南，AI agent 可直接按步驟實作，不需要參考其他文件。
 
 ---
 
@@ -18,9 +17,69 @@
 | #general Channel ID | `GENERAL_CHANNEL_ID` | 現有文字頻道，Main Bot 監聽 |
 | openclaw | 已安裝並可執行 | `openclaw config set ...` 可用 |
 
-> **Discord Bot 建立**：在 [Discord Developer Portal](https://discord.com/developers/applications) 建立 4 個 Application，
+> **Discord Bot 建立**：在 Discord Developer Portal 建立 4 個 Application，
 > 各自建立 Bot 並取得 Token。每個 Bot 設定不同的 username 和 avatar 以便辨識。
 > 4 個 Bot 都需要加入同一個私人 Server。
+
+---
+
+## 架構概覽
+
+```
+Discord Server（私人）
+│
+├── #general (文字頻道)                 ← Main Bot 監聽（日常對話 + 創建專案）
+│
+├── 📁 RAG系統 (Forum Channel)          ← 專案 A（動態建立）
+│   ├── 🧵 [User-PM] 專案討論           ← PM Bot 綁定
+│   ├── 🧵 [PM-Dev] 開發任務            ← Dev Bot 綁定
+│   └── 🧵 [Dev-CICD] 建置測試          ← CICD Bot 綁定
+│
+├── 📁 Auth重構 (Forum Channel)         ← 專案 B（動態建立）
+│   ├── 🧵 [User-PM] ...
+│   ├── 🧵 [PM-Dev] ...
+│   └── 🧵 [Dev-CICD] ...
+│
+└── #agent-logs (可選)
+```
+
+**通訊流**：User ↔ PM（User-PM thread）→ PM → Dev（PM-Dev thread）→ Dev → CICD（Dev-CICD thread）
+**錯誤上報**：CICD → Dev → PM → User（反向傳遞）
+**Session Key 格式**：`agent:<agentId>:discord:<accountId>:<threadId>`
+
+---
+
+## 禁止 Agent 執行的命令
+
+Agent 運行在 gateway 之內，以下操作會導致 Agent 自身被 SIGTERM 終止：
+
+```
+❌ openclaw gateway restart / stop
+❌ systemctl restart openclaw
+❌ 任何會終止 gateway 行程的命令
+```
+
+配置修改 / gateway 重啟由用戶（人類）從外部執行。Agent 如需變更配置：
+1. 修改配置檔案（write/edit）
+2. 通知用戶：「配置已更新，請手動執行 `openclaw gateway restart`」
+
+---
+
+# Phase 1：基礎設置
+
+## Step 0：啟用 Discord Plugin
+
+Discord plugin 預設是 **disabled**，必須先啟用：
+
+```bash
+openclaw config set plugins.entries.discord.enabled true
+```
+
+驗證：
+```bash
+openclaw plugins list
+# 確認 discord 狀態為 enabled
+```
 
 ---
 
@@ -28,9 +87,8 @@
 
 路徑：`~/.openclaw/openclaw.json`（主配置檔）
 
-> **重要：Phase 1 只寫以下配置，不要加任何 `plugins` 相關配置。**
-> `project-orchestrator` plugin 是 Phase 2 的工作，plugin 程式碼不存在時加入 plugin 配置會導致啟動失敗。
-> 下方的 JSON 是 Phase 1 完整的 `openclaw.json`，直接使用即可。
+> **Phase 1 只寫以下配置。不要加任何 `plugins.load` 或 `project-orchestrator` 相關配置。**
+> Plugin 程式碼不存在時加入 plugin path 配置會導致 gateway 啟動失敗。
 
 ```jsonc
 {
@@ -49,7 +107,6 @@
         "subagents": { "allowAgents": ["pm", "dev", "cicd"], "requireAgentId": true },
         "tools": {
           "allow": ["read", "glob", "grep", "sessions_spawn", "sessions_send", "sessions_list", "message"]
-          // Phase 2 完成後加入 "project_init"
         }
       },
       {
@@ -95,7 +152,6 @@
   },
 
   // ═══ 路由綁定 ═══
-  // 每個 binding 指定 accountId，確保訊息由正確的 Bot 接收和路由
   "bindings": [
     {
       "agentId": "main",
@@ -115,8 +171,6 @@
   ],
 
   // ═══ Discord 頻道（4 個 Bot Account）═══
-  // 每個 Agent 對應一個獨立 Discord Bot，擁有獨立 username / avatar
-  // 好處：視覺身分辨識、獨立打字指示器、session 天然隔離
   "channels": {
     "discord": {
       "groupPolicy": "open",
@@ -182,16 +236,11 @@
 }
 ```
 
-> **4 個 Bot Account**：每個 Agent 擁有獨立 Discord Bot（獨立 token / username / avatar）。
-> 好處：視覺身分辨識、獨立打字指示器、session key 天然含 accountId 隔離。
->
-> **`groupPolicy: "open"`**：Forum Channel 動態建立，所有 Bot 自動監聽。
->
-> **Session Key 格式**：`agent:<agentId>:discord:<accountId>:<threadId>`，accountId 即 Bot account 名稱（main / pm / dev / cicd）。
-
 ---
 
 ## Step 2：建立 Skill 檔案
+
+Skill 檔案路徑由 openclaw 的 skill 搜尋機制決定（通常在 `~/.openclaw/skills/` 或 workspace 下）。
 
 ### 2.1 `skills/main-orchestrator/SKILL.md`
 
@@ -252,6 +301,7 @@ description: Main Agent 的日常對話與專案初始化工作流程
 ## 限制
 - 建立完專案後不再參與該專案的後續流程
 - 不直接與 Dev 或 CICD 溝通專案事務
+- 不要執行 openclaw gateway restart/stop 等命令
 ```
 
 ### 2.2 `skills/pm-workflow/SKILL.md`
@@ -419,23 +469,59 @@ sessions_send({
 
 ---
 
-## Step 3：建立 project-orchestrator Plugin
+## Step 3：Discord Bot 權限設定
 
-> **此步驟屬於 Phase 2**，必須在 Step 1-2 驗證通過後才執行。
-> Plugin 程式碼和目錄建立完成後，才可在 `openclaw.json` 中加入 `plugins` 配置。
-> 加入時機：Plugin 程式碼寫好 → `openclaw gateway restart` → 驗證 `project_init` tool 可用。
+4 個 Bot 都需要相同的 Intent 和權限。在 Discord Developer Portal 中為每個 Application 設定：
 
-### 3.1 目錄結構
+### Gateway Intents（4 個 Bot 都要開啟）
+- `GUILDS`
+- `GUILD_MESSAGES`
+- `MESSAGE_CONTENT`
+
+### Bot Permissions（4 個 Bot 統一使用相同權限組）
+| 權限 | 用途 |
+|------|------|
+| `MANAGE_CHANNELS` | 動態建立 Forum Channel |
+| `SEND_MESSAGES` | 在頻道發送訊息 |
+| `SEND_MESSAGES_IN_THREADS` | 在 Thread 中發送訊息 |
+| `CREATE_PUBLIC_THREADS` | 在 Forum 中建立 Thread |
+| `READ_MESSAGE_HISTORY` | 讀取歷史訊息 |
+| `MANAGE_THREADS` | 管理 Thread 設定 |
+| `VIEW_CHANNEL` | 檢視頻道 |
+| `MANAGE_WEBHOOKS` | Thread Binding Webhook |
+
+---
+
+## Phase 1 驗證
 
 ```
-extensions/project-orchestrator/
+[ ] Discord plugin 已啟用（openclaw plugins list → discord: enabled）
+[ ] openclaw gateway restart 成功，無 config error
+[ ] channels status 顯示 discord 已連線（非空白）
+[ ] 4 個 Bot 都上線（Discord 中可見 4 個 Bot 在線）
+[ ] 在 #general @Main Bot 發送訊息，Main Agent 回應
+[ ] Main Agent 能進行日常對話
+```
+
+> **Phase 1 完成後再進入 Phase 2。** 此時 `project_init` tool 不存在，專案創建功能在 Phase 2 實作。
+
+---
+
+# Phase 2：project-orchestrator Plugin
+
+## Step 4：建立 Plugin 目錄結構
+
+路徑：`~/.openclaw/extensions/project-orchestrator/`
+
+```
+~/.openclaw/extensions/project-orchestrator/
 ├── openclaw.plugin.json
 ├── package.json
 └── src/
     └── index.ts
 ```
 
-### 3.2 `openclaw.plugin.json`
+### 4.1 `openclaw.plugin.json`
 
 ```jsonc
 {
@@ -447,123 +533,314 @@ extensions/project-orchestrator/
     "guildId": {
       "type": "string",
       "description": "Discord Server 的 Guild ID"
-    },
-    "discordAccountId": {
-      "type": "string",
-      "description": "Discord Bot 的 Account ID",
-      "default": "discord"
     }
   }
 }
 ```
 
-### 3.3 `src/index.ts`
+### 4.2 `package.json`
 
-完整實作見藍圖 Step 5。核心邏輯：
-
+```json
+{
+  "name": "@openclaw/project-orchestrator",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "src/index.ts"
+}
 ```
-project_init(projectName, description)
-  │
-  ├─ 1. POST /guilds/{guildId}/channels
-  │     → 建立 Forum Channel (type: 15 = GuildForum)
-  │     → 取得 forumChannelId
-  │
-  ├─ 2. createThreadDiscord(forumChannelId, ...) × 3
-  │     → [User-PM] 專案討論  → userPmThread.id
-  │     → [PM-Dev] 開發任務   → pmDevThread.id
-  │     → [Dev-CICD] 建置測試 → devCicdThread.id
-  │
-  ├─ 3. 構造 Session Key × 3
-  │     → agent:pm:discord:pm:channel:{userPmThread.id}
-  │     → agent:dev:discord:dev:channel:{pmDevThread.id}
-  │     → agent:cicd:discord:cicd:channel:{devCicdThread.id}
-  │       (每個 agent 使用各自的 accountId: pm/dev/cicd)
-  │
-  ├─ 4. getThreadBindingManager(accountId) + bindTarget() × 3
-  │     → pm account manager:   userPmThread  ↔ PM session
-  │     → dev account manager:  pmDevThread   ↔ Dev session
-  │     → cicd account manager: devCicdThread ↔ CICD session
-  │
-  └─ 5. 回傳 { forumChannelId, threads: { userPm, pmDev, devCicd } }
+
+### 4.3 `src/index.ts` 完整程式碼
+
+```typescript
+import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
+import type { AnyAgentTool, OpenClawPluginToolFactory } from "openclaw/plugin-sdk/core";
+
+/**
+ * 建立 project_init tool 的 factory function。
+ *
+ * 重要：openclaw plugin tool 必須用 factory 模式註冊：
+ *   api.registerTool((ctx) => toolObject, { name: "tool_name" })
+ * 不能直接傳 tool object。
+ */
+function createProjectInitTool(api: any): AnyAgentTool {
+  return {
+    name: "project_init",
+    description: "建立新專案：創建 Forum Channel + 3 個對話 Thread，設定 Thread Binding",
+    parameters: {
+      type: "object" as const,
+      properties: {
+        projectName: {
+          type: "string",
+          description: "專案名稱（例：RAG系統）",
+        },
+        description: {
+          type: "string",
+          description: "專案簡述",
+        },
+      },
+      required: ["projectName"],
+    },
+
+    async execute(params: { projectName: string; description?: string }) {
+      const { projectName, description } = params;
+
+      // ── 從 plugin config 取得 guildId ──
+      // 需在 openclaw.json 設定：
+      //   plugins.entries.project-orchestrator.config.guildId: "YOUR_GUILD_ID"
+      const guildId = "YOUR_GUILD_ID"; // TODO: 由 plugin config 注入
+
+      // ═══ 1. 建立 Forum Channel ═══
+      // 使用 Discord REST API 在 guild 下建立 GuildForum 類型的 channel
+      // ChannelType.GuildForum = 15
+
+      const forumChannel = await api.discord.rest.post(
+        `/guilds/${guildId}/channels`,
+        {
+          body: {
+            name: projectName,
+            type: 15, // GuildForum
+            topic: description ?? `專案：${projectName}`,
+          },
+        },
+      );
+
+      const forumChannelId = forumChannel.id;
+
+      // ═══ 2. 在 Forum 下建立 3 個 Thread ═══
+      // createThreadDiscord 會自動偵測 GuildForum 並使用 Forum Post 建立方式
+
+      const createForumThread = api.discord.createThreadDiscord;
+
+      // Thread 1: [User-PM] 專案討論
+      const userPmThread = await createForumThread(forumChannelId, {
+        name: `[User-PM] 專案討論`,
+        content: [
+          `# 專案：${projectName}`,
+          description ? `> ${description}` : "",
+          "",
+          "📋 **用戶與 PM 討論區**",
+          "在此 thread 與 PM 溝通需求、確認方向、追蹤進度。",
+        ]
+          .filter(Boolean)
+          .join("\n"),
+        autoArchiveDuration: 10080, // 7 天
+      });
+
+      // Thread 2: [PM-Dev] 開發任務
+      const pmDevThread = await createForumThread(forumChannelId, {
+        name: `[PM-Dev] 開發任務`,
+        content: [
+          `# 專案：${projectName}`,
+          "",
+          "💻 **PM 與 Dev 協作區**",
+          "PM 在此派發任務規格，Dev 在此回報開發進度。",
+        ].join("\n"),
+        autoArchiveDuration: 10080,
+      });
+
+      // Thread 3: [Dev-CICD] 建置測試
+      const devCicdThread = await createForumThread(forumChannelId, {
+        name: `[Dev-CICD] 建置測試`,
+        content: [
+          `# 專案：${projectName}`,
+          "",
+          "🔧 **Dev 與 CI/CD 協作區**",
+          "Dev 在此派發建置請求，CI/CD 在此回報測試結果。",
+        ].join("\n"),
+        autoArchiveDuration: 10080,
+      });
+
+      // ═══ 3. 構造 Session Key ═══
+      // 每個 agent 使用各自的 accountId（pm / dev / cicd）
+      // 格式：agent:<agentId>:discord:<accountId>:channel:<threadId>
+
+      const pmSessionKey = `agent:pm:discord:pm:channel:${userPmThread.id}`;
+      const devSessionKey = `agent:dev:discord:dev:channel:${pmDevThread.id}`;
+      const cicdSessionKey = `agent:cicd:discord:cicd:channel:${devCicdThread.id}`;
+
+      // ═══ 4. 建立 Thread Binding ═══
+      // 每個 thread 綁定到對應 agent 的 bot account
+      // 使用各自 account 的 ThreadBindingManager
+
+      const pmBindingManager = api.discord.getThreadBindingManager("pm");
+      await pmBindingManager.bindTarget({
+        threadId: userPmThread.id,
+        channelId: forumChannelId,
+        targetSessionKey: pmSessionKey,
+        agentId: "pm",
+        label: `[${projectName}] User-PM`,
+        introText: "PM 已就緒，等待用戶需求。",
+      });
+
+      const devBindingManager = api.discord.getThreadBindingManager("dev");
+      await devBindingManager.bindTarget({
+        threadId: pmDevThread.id,
+        channelId: forumChannelId,
+        targetSessionKey: devSessionKey,
+        agentId: "dev",
+        label: `[${projectName}] PM-Dev`,
+        introText: "Dev 已就緒，等待 PM 派發任務。",
+      });
+
+      const cicdBindingManager = api.discord.getThreadBindingManager("cicd");
+      await cicdBindingManager.bindTarget({
+        threadId: devCicdThread.id,
+        channelId: forumChannelId,
+        targetSessionKey: cicdSessionKey,
+        agentId: "cicd",
+        label: `[${projectName}] Dev-CICD`,
+        introText: "CI/CD 已就緒，等待 Dev 派發建置請求。",
+      });
+
+      // ═══ 5. 回傳結果給 Agent ═══
+
+      return {
+        status: "ok",
+        projectName,
+        forumChannelId,
+        threads: {
+          userPm: {
+            threadId: userPmThread.id,
+            sessionKey: pmSessionKey,
+            name: "[User-PM] 專案討論",
+          },
+          pmDev: {
+            threadId: pmDevThread.id,
+            sessionKey: devSessionKey,
+            name: "[PM-Dev] 開發任務",
+          },
+          devCicd: {
+            threadId: devCicdThread.id,
+            sessionKey: cicdSessionKey,
+            name: "[Dev-CICD] 建置測試",
+          },
+        },
+      };
+    },
+  } as AnyAgentTool;
+}
+
+// ═══ Plugin Entry ═══
+export default definePluginEntry({
+  id: "project-orchestrator",
+  name: "Project Orchestrator",
+  description: "自動建立專案 Forum Channel 和多 Agent 對話通道",
+  register(api) {
+    api.registerTool(
+      ((ctx) => createProjectInitTool(api)) as OpenClawPluginToolFactory,
+      { name: "project_init" }, // 明確指定 tool 名稱，Agent allowlist 用此名引用
+    );
+  },
+});
 ```
 
 ---
 
-## Step 4：Discord Bot 權限設定
+## Step 5：啟用 Plugin 並更新 Agent 配置
 
-4 個 Bot 都需要相同的 Intent 和權限。在 Discord Developer Portal 中為每個 Application 設定：
+Plugin 程式碼就緒後，更新 `~/.openclaw/openclaw.json`：
 
-### Gateway Intents（4 個 Bot 都要開啟）
-- `GUILDS`
-- `GUILD_MESSAGES`
-- `MESSAGE_CONTENT`
+### 5.1 加入 plugin 路徑
 
-### Bot Permissions（4 個 Bot 都要設定）
-| 權限 | 用途 | Main | PM | Dev | CICD |
-|------|------|:----:|:--:|:---:|:----:|
-| `MANAGE_CHANNELS` | 動態建立 Forum Channel | **必要** | - | - | - |
-| `SEND_MESSAGES` | 在頻道發送訊息 | v | v | v | v |
-| `SEND_MESSAGES_IN_THREADS` | 在 Thread 中發送訊息 | v | v | v | v |
-| `CREATE_PUBLIC_THREADS` | 在 Forum 中建立 Thread | v | - | - | - |
-| `READ_MESSAGE_HISTORY` | 讀取歷史訊息 | v | v | v | v |
-| `MANAGE_THREADS` | 管理 Thread 設定 | v | - | - | - |
-| `VIEW_CHANNEL` | 檢視頻道 | v | v | v | v |
-| `MANAGE_WEBHOOKS` | Thread Binding Webhook | v | v | v | v |
+```bash
+openclaw config set plugins.load.paths '["~/.openclaw/extensions/project-orchestrator"]'
+```
 
-> **簡化做法**：4 個 Bot 統一使用相同權限組，避免權限不足問題。
+或手動在 `openclaw.json` 中加入：
+
+```jsonc
+{
+  "plugins": {
+    "load": {
+      "paths": ["~/.openclaw/extensions/project-orchestrator"]
+    },
+    "entries": {
+      "project-orchestrator": {
+        "enabled": true,
+        "config": {
+          "guildId": "YOUR_GUILD_ID"
+        }
+      }
+    }
+  }
+}
+```
+
+### 5.2 更新 Main Agent 的 tool allowlist
+
+在 `agents.list` 中找到 `main` agent，加入 `"project_init"`：
+
+```jsonc
+{
+  "id": "main",
+  // ...
+  "tools": {
+    "allow": [
+      "read", "glob", "grep",
+      "sessions_spawn", "sessions_send", "sessions_list",
+      "message",
+      "project_init"  // ← 新增
+    ]
+  }
+}
+```
+
+> Agent `tools.allow` 引用 plugin tool 的三種寫法（擇一）：
+> - `"project_init"` — 指定 tool 名稱
+> - `"project-orchestrator"` — 允許該 plugin 所有 tool
+> - `"group:plugins"` — 允許所有 plugin tool
+
+### 5.3 重啟 gateway
+
+**由用戶（人類）執行**：
+
+```bash
+openclaw gateway restart
+```
 
 ---
 
-## Step 5：驗證清單
+## Phase 2 驗證
 
-按順序逐一驗證，每步通過後再進行下一步。
-
-### Phase 1 驗證（Step 1 + 2 完成後）
-
-> **Phase 1 目標**：4 個 Bot 上線，Main 能對話，Skill 載入正確。
-> 此時 `project_init` tool 尚不存在，專案創建功能在 Phase 2 實作。
-
-### 5.1 基礎連線
+### 驗證 Plugin 載入
 ```
-[ ] openclaw gateway restart 成功，無 config error
-[ ] 4 個 Bot 都上線（Discord 中可見 4 個 Bot 在線）
-[ ] 在 #general 發送訊息，Main Agent 回應
-[ ] Main Agent 能進行日常對話
+[ ] openclaw plugins list → project-orchestrator: enabled
+[ ] gateway 啟動無 error（無 "plugin path not found" 等錯誤）
+[ ] Main Agent 的可用 tool 中包含 project_init
 ```
 
-### Phase 2 驗證（Step 3 完成後）
-
-### 5.2 專案創建
+### 驗證專案創建
 ```
-[ ] 在 #general 發送「幫我創建專案，測試專案」
+[ ] 在 #general 發送「@Main Bot 幫我創建專案，測試專案」
 [ ] Main 呼叫 project_init → Forum Channel「測試專案」已建立
 [ ] Forum 下有 3 個 Thread：[User-PM]、[PM-Dev]、[Dev-CICD]
-[ ] Main 回覆包含 Forum 和 Thread 連結
+[ ] 每個 Thread 有 introText 開場白
+[ ] Main 回覆包含 Forum 和 Thread 資訊
 ```
 
-### 5.3 Thread Binding 路由
+### 驗證 Thread Binding 路由
 ```
-[ ] 在 [User-PM] thread 發言 → PM Agent 回應（非 Main）
-[ ] 在 [PM-Dev] thread 發言 → Dev Agent 回應
-[ ] 在 [Dev-CICD] thread 發言 → CICD Agent 回應
+[ ] 在 [User-PM] thread 發言 → PM Bot 回應（非 Main Bot）
+[ ] 在 [PM-Dev] thread 發言 → Dev Bot 回應
+[ ] 在 [Dev-CICD] thread 發言 → CICD Bot 回應
 ```
 
-### 5.4 Agent 間通訊
+### 驗證 Agent 間通訊
 ```
 [ ] 在 [User-PM] 向 PM 提需求 → PM 用 sessions_send 派發給 Dev
-[ ] Dev 的回應出現在 [PM-Dev] thread
+[ ] Dev 的回應出現在 [PM-Dev] thread（由 Dev Bot 發送）
 [ ] Dev 用 sessions_send 派發 CICD → CICD 回應出現在 [Dev-CICD] thread
-[ ] CICD 結果回傳給 Dev → Dev 回報 PM → PM 匯報用戶
+[ ] CICD 結果回傳給 Dev → Dev 回報 PM → PM 在 [User-PM] thread 匯報用戶
 ```
 
-### 5.5 錯誤上報
+### 驗證錯誤上報
 ```
 [ ] 模擬 CICD 失敗 → Dev 收到失敗通知
 [ ] Dev 上報 PM → PM 在 [User-PM] thread 詢問用戶
 [ ] 用戶回覆 → PM 轉達 Dev → Dev 繼續
 ```
 
-### 5.6 專案隔離
+### 驗證專案隔離
 ```
 [ ] 建立第二個專案 → 新的 Forum Channel + 3 Threads
 [ ] 兩個專案的 Agent 對話互不干擾
@@ -576,10 +853,14 @@ project_init(projectName, description)
 
 | 症狀 | 可能原因 | 解法 |
 |------|---------|------|
-| Forum 建立失敗 | Bot 缺少 `MANAGE_CHANNELS` 權限 | 重新設定 Bot 權限 |
-| Thread 中 Agent 不回應 | Thread Binding 未設定 / 已過期 | 檢查 `bindTarget()` 是否成功 |
-| `sessions_send` 被拒絕 | `agentToAgent.enabled` 未開啟 | 確認 openclaw.json 中的配置 |
-| Agent 回應在錯誤 Thread | Session Key 構造錯誤 | 檢查 `agent:<id>:discord:<account>:channel:<threadId>` 格式 |
-| 動態建立的 Forum 無法監聽 | `groupPolicy` 設定錯誤 | 使用 `groupPolicy: "open"` |
-| Thread Binding 過期 | `maxAgeMs` 太短 | 調大至 2592000000 (30天) 或更長 |
-| 訊息未出現在 Discord | Webhook 未建立 | 確認 Bot 有 `MANAGE_WEBHOOKS` 權限 |
+| gateway 啟動失敗：plugin path not found | plugin 目錄不存在或路徑錯誤 | 確認 `~/.openclaw/extensions/project-orchestrator/` 存在 |
+| gateway 啟動失敗：config invalid | 配置格式錯誤 | 執行 `openclaw doctor --fix` |
+| discord channels 表格空白 | Discord plugin 未啟用 | `openclaw config set plugins.entries.discord.enabled true` |
+| Forum 建立失敗 | Main Bot 缺少 `MANAGE_CHANNELS` 權限 | 在 Discord Developer Portal 重新設定權限 |
+| `project_init` tool 不在可用清單 | plugin 未載入 / tool 名稱不在 allowlist | 確認 plugin enabled + `tools.allow` 含 `"project_init"` |
+| Thread 中 Agent 不回應 | Thread Binding 未設定 / 已過期 | 檢查 `bindTarget()` 是否成功執行 |
+| `sessions_send` 被拒絕 | 跨 Agent 通訊未開啟 | 確認 `agentToAgent.enabled: true` 和 `sessions.visibility: "all"` |
+| Agent 回應由錯誤 Bot 發送 | Session Key 的 accountId 不正確 | 檢查格式 `agent:<id>:discord:<account>:channel:<threadId>` |
+| 動態 Forum 無法被 Bot 監聽 | `groupPolicy` 不是 `"open"` | 設定 `groupPolicy: "open"` |
+| Thread Binding 過期 | `maxAgeHours` 太短 | 調大至 720（30天）或更長 |
+| exec 被 SIGTERM 中斷 | Agent 嘗試重啟 gateway | **Agent 禁止執行 gateway 管理命令** |

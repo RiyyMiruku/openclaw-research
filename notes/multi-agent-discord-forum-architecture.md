@@ -599,33 +599,33 @@ sessions_send({
 ```typescript
 // extensions/project-orchestrator/src/index.ts
 
-import type { OpenClawPluginDefinition } from "openclaw/plugin-sdk/plugin-entry";
+import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
+import type { AnyAgentTool, OpenClawPluginToolFactory } from "openclaw/plugin-sdk/core";
 
-export default {
-  register(api) {
-    // ── 註冊 project_init Tool ──
-    api.registerTool({
-      name: "project_init",
-      description: "建立新專案：創建 Forum Channel + 3 個對話 Thread",
-      parameters: {
-        type: "object",
-        properties: {
-          projectName: {
-            type: "string",
-            description: "專案名稱（例：RAG系統）"
-          },
-          description: {
-            type: "string",
-            description: "專案簡述"
-          }
+// ── Tool Factory：建立 project_init tool ──
+function createProjectInitTool(api: any): AnyAgentTool {
+  return {
+    name: "project_init",
+    description: "建立新專案：創建 Forum Channel + 3 個對話 Thread",
+    parameters: {
+      type: "object" as const,
+      properties: {
+        projectName: {
+          type: "string",
+          description: "專案名稱（例：RAG系統）"
         },
-        required: ["projectName"]
+        description: {
+          type: "string",
+          description: "專案簡述"
+        }
       },
+      required: ["projectName"]
+    },
 
-      async handler(params, ctx) {
-        const { projectName, description } = params;
-        const guildId = ctx.config.get("projectOrchestrator.guildId");
-        const accountId = ctx.config.get("projectOrchestrator.discordAccountId");
+    async execute(params: { projectName: string; description?: string }) {
+      const { projectName, description } = params;
+      // 從 plugin config 取得 guildId
+      const guildId = "YOUR_GUILD_ID";  // 由 plugin config 注入
 
         // ── 1. 建立 Forum Channel ──
         // 使用 Discord REST API 在 guild 下建立新的 Forum Channel
@@ -637,12 +637,13 @@ export default {
               name: projectName,
               type: 15,  // ChannelType.GuildForum
               topic: description ?? `專案：${projectName}`,
-              // 可設定預設的 Forum Tags
-              available_tags: [
-                { name: "User-PM", moderated: false },
-                { name: "PM-Dev", moderated: false },
-                { name: "Dev-CICD", moderated: false },
-              ],
+              // ⚠️ available_tags：openclaw SDK 的 DiscordChannelCreate type
+              // 目前不支援此欄位，需直接用 Discord REST API 或等 SDK 擴充
+              // available_tags: [
+              //   { name: "User-PM", moderated: false },
+              //   { name: "PM-Dev", moderated: false },
+              //   { name: "Dev-CICD", moderated: false },
+              // ],
             },
           }
         );
@@ -757,11 +758,30 @@ export default {
             },
           },
         };
-      },
-    });
+    },
+  } as AnyAgentTool;
+}
+
+// ── Plugin Entry：使用 definePluginEntry ──
+export default definePluginEntry({
+  id: "project-orchestrator",
+  name: "Project Orchestrator",
+  description: "自動建立專案 Forum Channel 和多 Agent 對話通道",
+  register(api) {
+    // 使用 factory 模式 + 明確 name
+    api.registerTool(
+      ((ctx) => createProjectInitTool(api)) as OpenClawPluginToolFactory,
+      { name: "project_init" }  // 必須明確指定名稱
+    );
   },
-} satisfies OpenClawPluginDefinition;
+});
 ```
+
+> **Tool 註冊要點**：
+> 1. 使用 `definePluginEntry()` 而非直接 export object
+> 2. `api.registerTool()` 接受 **factory function**（`(ctx) => Tool`），不是 tool object
+> 3. 第二個參數 `{ name: "project_init" }` 明確指定 tool 名稱，確保 agent allowlist 可引用
+> 4. Agent 的 `tools.allow` 中使用 `"project_init"` 或 `"project-orchestrator"`（plugin ID）來允許
 
 ### Plugin 清單
 
