@@ -238,11 +238,37 @@ openclaw plugins list
 
 ---
 
-## Step 2：建立 Skill 檔案
+## Step 2：建立各 Agent 的 Core Files
 
-Skill 檔案路徑由 openclaw 的 skill 搜尋機制決定（通常在 `~/.openclaw/skills/` 或 workspace 下）。
+每個 agent 的 workspace 有獨立的 bootstrap files 搜尋路徑。
+Skill 和 AGENTS.md 直接放在各自的 workspace 目錄下。
 
-### 2.1 `skills/main-orchestrator/SKILL.md`
+```
+~/.openclaw/
+├── workspace/                              ← Main Agent
+│   ├── AGENTS.md                           ← Main 核心指令
+│   └── skills/main-orchestrator/SKILL.md
+│
+├── devprojects/
+│   ├── pm-workspace/                       ← PM Agent
+│   │   ├── AGENTS.md                       ← PM 核心指令
+│   │   └── skills/pm-workflow/SKILL.md
+│   │
+│   ├── dev-workspace/                      ← Dev Agent
+│   │   ├── AGENTS.md                       ← Dev 核心指令
+│   │   └── skills/dev-workflow/SKILL.md
+│   │
+│   └── cicd-workspace/                     ← CICD Agent
+│       ├── AGENTS.md                       ← CICD 核心指令
+│       └── skills/cicd-workflow/SKILL.md
+```
+
+> **bootstrap files 搜尋機制**：openclaw 從 agent 的 `workspace` 目錄載入
+> `AGENTS.md`、`SOUL.md`、`TOOLS.md`、`IDENTITY.md` 等。
+> Skills 從 `workspace/skills/` 和 `workspace/.agents/skills/` 搜尋。
+> 每個 agent workspace 獨立，互不影響。
+
+### 2.1 Main Agent — `~/.openclaw/workspace/skills/main-orchestrator/SKILL.md`
 
 ```markdown
 ---
@@ -304,7 +330,7 @@ description: Main Agent 的日常對話與專案初始化工作流程
 - 不要執行 openclaw gateway restart/stop 等命令
 ```
 
-### 2.2 `skills/pm-workflow/SKILL.md`
+### 2.2 PM Agent — `~/.openclaw/devprojects/pm-workspace/skills/pm-workflow/SKILL.md`
 
 ```markdown
 ---
@@ -363,7 +389,7 @@ description: PM Agent 的專案管理工作流程
 ```
 ```
 
-### 2.3 `skills/dev-workflow/SKILL.md`
+### 2.3 Dev Agent — `~/.openclaw/devprojects/dev-workspace/skills/dev-workflow/SKILL.md`
 
 ```markdown
 ---
@@ -424,7 +450,7 @@ description: Dev Agent 的開發工作流程
 1. 理解要求 → 修改程式碼 → 更新 PR → 重新派發 CICD
 ```
 
-### 2.4 `skills/cicd-workflow/SKILL.md`
+### 2.4 CICD Agent — `~/.openclaw/devprojects/cicd-workspace/skills/cicd-workflow/SKILL.md`
 
 ```markdown
 ---
