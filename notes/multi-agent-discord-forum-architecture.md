@@ -128,7 +128,7 @@ PM 與用戶溝通 → 在 [User-PM] Thread 回覆用戶
 ### Step 1：定義四個 Agent
 
 ```jsonc
-// settings.json
+// ~/.openclaw/openclaw.json
 {
   "agents": {
     "list": [

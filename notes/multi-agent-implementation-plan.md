@@ -17,9 +17,9 @@
 
 ---
 
-## Step 1：建立 settings.json
+## Step 1：建立 openclaw.json
 
-路徑：openclaw 配置目錄下的 `settings.json`
+路徑：`~/.openclaw/openclaw.json`（主配置檔）
 
 ```jsonc
 {
@@ -509,7 +509,7 @@ Bot 需要以下 Intent 和權限：
 |------|---------|------|
 | Forum 建立失敗 | Bot 缺少 `MANAGE_CHANNELS` 權限 | 重新設定 Bot 權限 |
 | Thread 中 Agent 不回應 | Thread Binding 未設定 / 已過期 | 檢查 `bindTarget()` 是否成功 |
-| `sessions_send` 被拒絕 | `agentToAgent.enabled` 未開啟 | 確認 settings.json 中的配置 |
+| `sessions_send` 被拒絕 | `agentToAgent.enabled` 未開啟 | 確認 openclaw.json 中的配置 |
 | Agent 回應在錯誤 Thread | Session Key 構造錯誤 | 檢查 `agent:<id>:discord:<account>:channel:<threadId>` 格式 |
 | 動態建立的 Forum 無法監聽 | `groupPolicy: "allowlist"` 未包含新 Channel | 改用 `groupPolicy: "none"` |
 | Thread Binding 過期 | `maxAgeMs` 太短 | 調大至 2592000000 (30天) 或更長 |
