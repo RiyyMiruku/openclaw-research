@@ -101,7 +101,7 @@ openclaw plugins list
         "default": true,
         "identity": { "name": "Main", "emoji": "🚀" },
         "model": { "primary": "claude-sonnet-4-6" },
-        "workspace": "./projects",
+        "workspace": "./workspace",                    // ~/.openclaw/workspace
         "thinkingDefault": "medium",
         "skills": ["main-orchestrator"],
         "subagents": { "allowAgents": ["pm", "dev", "cicd"], "requireAgentId": true },
@@ -114,7 +114,7 @@ openclaw plugins list
         "name": "PM Agent",
         "identity": { "name": "PM", "emoji": "📋" },
         "model": { "primary": "claude-opus-4-6" },
-        "workspace": "./projects",
+        "workspace": "./devprojects/pm-workspace",    // ~/.openclaw/devprojects/pm-workspace
         "thinkingDefault": "high",
         "skills": ["pm-workflow"],
         "subagents": { "allowAgents": ["dev"], "requireAgentId": true },
@@ -127,7 +127,7 @@ openclaw plugins list
         "name": "Dev Agent",
         "identity": { "name": "Dev", "emoji": "💻" },
         "model": { "primary": "claude-sonnet-4-6" },
-        "workspace": "./projects",
+        "workspace": "./devprojects/dev-workspace",   // ~/.openclaw/devprojects/dev-workspace
         "thinkingDefault": "medium",
         "skills": ["dev-workflow"],
         "subagents": { "allowAgents": ["cicd"], "requireAgentId": true },
@@ -140,7 +140,7 @@ openclaw plugins list
         "name": "CI/CD Agent",
         "identity": { "name": "CI/CD", "emoji": "🔧" },
         "model": { "primary": "claude-haiku-4-5" },
-        "workspace": "./projects",
+        "workspace": "./devprojects/cicd-workspace",  // ~/.openclaw/devprojects/cicd-workspace
         "thinkingDefault": "low",
         "skills": ["cicd-workflow"],
         "subagents": { "allowAgents": [], "requireAgentId": false },
@@ -639,11 +639,15 @@ export default definePluginEntry({
           required: ["projectName"],
         },
 
-        async execute(params: {
-          projectName: string;
-          description?: string;
-        }) {
-          const { projectName, description } = params;
+        async execute(
+          _toolCallId: string,
+          rawParams: Record<string, unknown>,
+        ) {
+          const projectName = String(rawParams.projectName ?? "");
+          const description = rawParams.description
+            ? String(rawParams.description)
+            : undefined;
+          if (!projectName) throw new Error("projectName is required");
           const guild =
             guildId ?? (api.pluginConfig as any)?.guildId;
           if (!guild) {

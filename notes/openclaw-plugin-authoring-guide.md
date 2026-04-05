@@ -85,8 +85,8 @@ function createMyTool(pluginConfig: Record<string, unknown> | undefined): AnyAge
       },
       required: ["input"],
     },
-    async execute(_toolCallId: string, params: Record<string, unknown>) {
-      const input = String(params.input ?? "");
+    async execute(_toolCallId: string, rawParams: Record<string, unknown>) {
+      const input = String(rawParams.input ?? "");
       // ... tool 邏輯 ...
       return {
         content: [{ type: "text", text: `Result: ${input}` }],
@@ -120,6 +120,16 @@ export default definePluginEntry({
 
 ## 4. Tool 物件結構
 
+> **易錯點**：`execute` 的第一個參數是 `toolCallId`（string），第二個才是 `params`。
+> 寫成 `execute(params)` 會導致 toolCallId 字串被當成 params，真正參數被忽略。
+> ```typescript
+> // ❌ 錯誤
+> async execute(params: any) { ... }
+>
+> // ✅ 正確
+> async execute(_toolCallId: string, rawParams: Record<string, unknown>) { ... }
+> ```
+
 ```typescript
 {
   name: string;              // tool 名稱（snake_case），Agent allowlist 用此引用
@@ -127,8 +137,8 @@ export default definePluginEntry({
   description: string;       // 描述（給 LLM 看的）
   parameters: JSONSchema;    // 參數定義（JSON Schema 或 @sinclair/typebox）
   execute: (                 // 執行函數
-    toolCallId: string,
-    params: Record<string, unknown>,
+    toolCallId: string,      // ← 第一個參數，通常用 _toolCallId 忽略
+    params: Record<string, unknown>,  // ← 第二個才是實際參數
   ) => Promise<ToolResult>;
   ownerOnly?: boolean;       // 僅限 owner 使用
 }
@@ -266,6 +276,7 @@ openclaw plugins list
 | `api.discord` undefined | `OpenClawPluginApi` 無 `.discord` 屬性 | 用 `fetch()` 直接呼叫 Discord REST API |
 | Plugin ID 不匹配 | `package.json` name ≠ `openclaw.plugin.json` id | 兩者必須一致 |
 | 使用 `@openclaw/` scope | 本地 plugin 不需要 npm scope | 移除 scope，直接用 `"my-plugin"` |
+| Tool 收到的參數是字串 | `execute(params)` 少了第一個 `toolCallId` 參數 | 改為 `execute(_toolCallId, params)` |
 
 ---
 

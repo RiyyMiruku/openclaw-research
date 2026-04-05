@@ -144,7 +144,7 @@ PM 與用戶溝通 → 在 [User-PM] Thread 回覆用戶
         "model": {
           "primary": "claude-sonnet-4-6"   // 需處理日常對話，用中等模型
         },
-        "workspace": "./projects",
+        "workspace": "./workspace",                   // ~/.openclaw/workspace
         "thinkingDefault": "medium",
         "skills": ["main-orchestrator"],
         "subagents": {
@@ -171,7 +171,7 @@ PM 與用戶溝通 → 在 [User-PM] Thread 回覆用戶
         "model": {
           "primary": "claude-opus-4-6"     // PM 需要強推理
         },
-        "workspace": "./projects",
+        "workspace": "./devprojects/pm-workspace",    // ~/.openclaw/devprojects/pm-workspace
         "thinkingDefault": "high",
         "skills": ["pm-workflow"],
         "subagents": {
@@ -198,7 +198,7 @@ PM 與用戶溝通 → 在 [User-PM] Thread 回覆用戶
         "model": {
           "primary": "claude-sonnet-4-6"
         },
-        "workspace": "./projects",
+        "workspace": "./devprojects/dev-workspace",   // ~/.openclaw/devprojects/dev-workspace
         "thinkingDefault": "medium",
         "skills": ["dev-workflow"],
         "subagents": {
@@ -224,7 +224,7 @@ PM 與用戶溝通 → 在 [User-PM] Thread 回覆用戶
         "model": {
           "primary": "claude-haiku-4-5"    // CI/CD 用快速模型
         },
-        "workspace": "./projects",
+        "workspace": "./devprojects/cicd-workspace",  // ~/.openclaw/devprojects/cicd-workspace
         "thinkingDefault": "low",
         "skills": ["cicd-workflow"],
         "subagents": {
@@ -596,192 +596,73 @@ sessions_send({
 
 ### 自訂 Plugin：`project-orchestrator`
 
+完整程式碼見執行計畫 `notes/multi-agent-implementation-plan.md` Step 4.3。
+
+以下為核心邏輯摘要：
+
 ```typescript
 // extensions/project-orchestrator/src/index.ts
-
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
-import type { AnyAgentTool, OpenClawPluginToolFactory } from "openclaw/plugin-sdk/core";
+import type { OpenClawPluginToolFactory } from "openclaw/plugin-sdk/core";
 
-// ── Tool Factory：建立 project_init tool ──
-function createProjectInitTool(api: any): AnyAgentTool {
-  return {
-    name: "project_init",
-    description: "建立新專案：創建 Forum Channel + 3 個對話 Thread",
-    parameters: {
-      type: "object" as const,
-      properties: {
-        projectName: {
-          type: "string",
-          description: "專案名稱（例：RAG系統）"
-        },
-        description: {
-          type: "string",
-          description: "專案簡述"
-        }
-      },
-      required: ["projectName"]
-    },
+const DISCORD_API = "https://discord.com/api/v10";
 
-    async execute(params: { projectName: string; description?: string }) {
-      const { projectName, description } = params;
-      // 從 plugin config 取得 guildId
-      const guildId = "YOUR_GUILD_ID";  // 由 plugin config 注入
-
-        // ── 1. 建立 Forum Channel ──
-        // 使用 Discord REST API 在 guild 下建立新的 Forum Channel
-
-        const forumChannel = await ctx.discord.rest.post(
-          `/guilds/${guildId}/channels`,
-          {
-            body: {
-              name: projectName,
-              type: 15,  // ChannelType.GuildForum
-              topic: description ?? `專案：${projectName}`,
-              // ⚠️ available_tags：openclaw SDK 的 DiscordChannelCreate type
-              // 目前不支援此欄位，需直接用 Discord REST API 或等 SDK 擴充
-              // available_tags: [
-              //   { name: "User-PM", moderated: false },
-              //   { name: "PM-Dev", moderated: false },
-              //   { name: "Dev-CICD", moderated: false },
-              // ],
-            },
-          }
-        );
-
-        const forumChannelId = forumChannel.id;
-
-        // ── 2. 在 Forum 下建立 3 個 Thread（Forum Post）──
-
-        const createForumThread = ctx.discord.createThreadDiscord;
-
-        // Thread 1: [User-PM] 專案討論
-        const userPmThread = await createForumThread(forumChannelId, {
-          name: `[User-PM] 專案討論`,
-          content: [
-            `# 專案：${projectName}`,
-            description ? `> ${description}` : "",
-            "",
-            "📋 **用戶與 PM 討論區**",
-            "在此 thread 與 PM 溝通需求、確認方向、追蹤進度。",
-          ].filter(Boolean).join("\n"),
-          autoArchiveDuration: 10080, // 7 天
-        });
-
-        // Thread 2: [PM-Dev] 開發任務
-        const pmDevThread = await createForumThread(forumChannelId, {
-          name: `[PM-Dev] 開發任務`,
-          content: [
-            `# 專案：${projectName}`,
-            "",
-            "💻 **PM 與 Dev 協作區**",
-            "PM 在此派發任務規格，Dev 在此回報開發進度。",
-          ].join("\n"),
-          autoArchiveDuration: 10080,
-        });
-
-        // Thread 3: [Dev-CICD] 建置測試
-        const devCicdThread = await createForumThread(forumChannelId, {
-          name: `[Dev-CICD] 建置測試`,
-          content: [
-            `# 專案：${projectName}`,
-            "",
-            "🔧 **Dev 與 CI/CD 協作區**",
-            "Dev 在此派發建置請求，CI/CD 在此回報測試結果。",
-          ].join("\n"),
-          autoArchiveDuration: 10080,
-        });
-
-        // ── 3. 構造 Session Key ──
-        // 每個 agent 使用對應的 accountId（pm/dev/cicd）
-
-        const pmSessionKey =
-          `agent:pm:discord:pm:channel:${userPmThread.id}`;
-        const devSessionKey =
-          `agent:dev:discord:dev:channel:${pmDevThread.id}`;
-        const cicdSessionKey =
-          `agent:cicd:discord:cicd:channel:${devCicdThread.id}`;
-
-        // ── 4. 建立 Thread Binding ──
-        // 每個 thread 綁定到對應 agent 的 bot account
-
-        const pmBindingManager = ctx.discord.getThreadBindingManager("pm");
-        await pmBindingManager.bindTarget({
-          threadId: userPmThread.id,
-          channelId: forumChannelId,
-          targetSessionKey: pmSessionKey,
-          agentId: "pm",
-          label: `[${projectName}] User-PM`,
-          introText: `PM 已就緒，等待用戶需求。`,
-        });
-
-        const devBindingManager = ctx.discord.getThreadBindingManager("dev");
-        await devBindingManager.bindTarget({
-          threadId: pmDevThread.id,
-          channelId: forumChannelId,
-          targetSessionKey: devSessionKey,
-          agentId: "dev",
-          label: `[${projectName}] PM-Dev`,
-          introText: `Dev 已就緒，等待 PM 派發任務。`,
-        });
-
-        const cicdBindingManager = ctx.discord.getThreadBindingManager("cicd");
-        await cicdBindingManager.bindTarget({
-          threadId: devCicdThread.id,
-          channelId: forumChannelId,
-          targetSessionKey: cicdSessionKey,
-          agentId: "cicd",
-          label: `[${projectName}] Dev-CICD`,
-          introText: `CI/CD 已就緒，等待 Dev 派發建置請求。`,
-        });
-
-        // ── 5. 回傳結果 ──
-
-        return {
-          status: "ok",
-          projectName,
-          forumChannelId,
-          threads: {
-            userPm: {
-              threadId: userPmThread.id,
-              sessionKey: pmSessionKey,
-              name: `[User-PM] 專案討論`,
-            },
-            pmDev: {
-              threadId: pmDevThread.id,
-              sessionKey: devSessionKey,
-              name: `[PM-Dev] 開發任務`,
-            },
-            devCicd: {
-              threadId: devCicdThread.id,
-              sessionKey: cicdSessionKey,
-              name: `[Dev-CICD] 建置測試`,
-            },
-          },
-        };
-    },
-  } as AnyAgentTool;
+// ── 直接呼叫 Discord REST API（不依賴 openclaw 內部 API）──
+async function discordApi(token: string, method: string, path: string, body?: Record<string, unknown>) {
+  const res = await fetch(`${DISCORD_API}${path}`, {
+    method,
+    headers: { Authorization: `Bot ${token}`, "Content-Type": "application/json" },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  if (!res.ok) throw new Error(`Discord API ${method} ${path} failed (${res.status}): ${await res.text()}`);
+  return res.json();
 }
 
-// ── Plugin Entry：使用 definePluginEntry ──
 export default definePluginEntry({
   id: "project-orchestrator",
   name: "Project Orchestrator",
   description: "自動建立專案 Forum Channel 和多 Agent 對話通道",
   register(api) {
-    // 使用 factory 模式 + 明確 name
+    const guildId = (api.pluginConfig as any)?.guildId as string | undefined;
+
     api.registerTool(
-      ((ctx) => createProjectInitTool(api)) as OpenClawPluginToolFactory,
-      { name: "project_init" }  // 必須明確指定名稱
+      ((ctx) => ({
+        name: "project_init",
+        description: "建立新專案：創建 Discord Forum Channel + 3 個對話 Thread",
+        parameters: { /* projectName (required), description (optional) */ },
+
+        async execute(_toolCallId: string, rawParams: Record<string, unknown>) {
+          const projectName = String(rawParams.projectName ?? "");
+          const mainToken = resolveToken(ctx.config, "main");
+
+          // 1. POST /guilds/{id}/channels → Forum Channel (type: 15)
+          const forum = await discordApi(mainToken, "POST", `/guilds/${guildId}/channels`, { name: projectName, type: 15 });
+
+          // 2. POST /channels/{forumId}/threads × 3 → [User-PM], [PM-Dev], [Dev-CICD]
+          const userPm = await discordApi(mainToken, "POST", `/channels/${forum.id}/threads`, { name: "[User-PM] 專案討論", message: { content: "..." }, auto_archive_duration: 10080 });
+          const pmDev  = await discordApi(mainToken, "POST", `/channels/${forum.id}/threads`, { name: "[PM-Dev] 開發任務", message: { content: "..." }, auto_archive_duration: 10080 });
+          const devCicd = await discordApi(mainToken, "POST", `/channels/${forum.id}/threads`, { name: "[Dev-CICD] 建置測試", message: { content: "..." }, auto_archive_duration: 10080 });
+
+          // 3. 構造 Session Key（每個 agent 用各自 accountId）
+          const pmKey   = `agent:pm:discord:pm:channel:${userPm.id}`;
+          const devKey  = `agent:dev:discord:dev:channel:${pmDev.id}`;
+          const cicdKey = `agent:cicd:discord:cicd:channel:${devCicd.id}`;
+
+          // 4. 回傳（Thread Binding 由框架自動處理）
+          return { status: "ok", projectName, forumChannelId: forum.id, threads: { userPm: { threadId: userPm.id, sessionKey: pmKey }, pmDev: { threadId: pmDev.id, sessionKey: devKey }, devCicd: { threadId: devCicd.id, sessionKey: cicdKey } } };
+        },
+      })) as OpenClawPluginToolFactory,
+      { name: "project_init" },
     );
   },
 });
 ```
 
-> **Tool 註冊要點**：
-> 1. 使用 `definePluginEntry()` 而非直接 export object
-> 2. `api.registerTool()` 接受 **factory function**（`(ctx) => Tool`），不是 tool object
-> 3. 第二個參數 `{ name: "project_init" }` 明確指定 tool 名稱，確保 agent allowlist 可引用
-> 4. Agent 的 `tools.allow` 中使用 `"project_init"` 或 `"project-orchestrator"`（plugin ID）來允許
+> **已確認不可用的 API**（踩坑紀錄）：
+> - ~~`api.discord.rest.post()`~~ → `OpenClawPluginApi` 無 `.discord` 屬性
+> - ~~`ctx.discord.createThreadDiscord()`~~ → Discord extension 內部函數，外部 plugin 無法存取
+> - ~~`ctx.discord.getThreadBindingManager()`~~ → 同上
+> - ~~`execute(params)`~~ → 正確簽名是 `execute(_toolCallId, rawParams)`
 
 ### Plugin 清單
 
@@ -1055,7 +936,7 @@ Thread IDs: T1001, T1002, T1003          Thread IDs: T2001, T2002, T2003
 ### Phase 1：基礎設置
 1. 在 Discord Server 建立 `#general` 文字頻道（或使用現有的）
 2. 建立 Discord Bot 並取得 Token，確保 Bot 有「管理頻道」權限（建立 Forum Channel）
-3. 設定 `settings.json` 中的四個 Agent 配置
+3. 設定 `openclaw.json` 中的四個 Agent 配置
 4. 設定 Discord channel 配置和路由綁定
 5. 撰寫四個 Skill 檔案
 6. 啟用 `agentToAgent` 和 `sessions.visibility` 配置
