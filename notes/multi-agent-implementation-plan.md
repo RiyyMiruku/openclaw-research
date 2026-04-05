@@ -542,7 +542,7 @@ sessions_send({
 
 ```json
 {
-  "name": "@openclaw/project-orchestrator",
+  "name": "project-orchestrator",
   "version": "0.1.0",
   "type": "module",
   "main": "src/index.ts"
