@@ -28,6 +28,10 @@
 
 路徑：`~/.openclaw/openclaw.json`（主配置檔）
 
+> **重要：Phase 1 只寫以下配置，不要加任何 `plugins` 相關配置。**
+> `project-orchestrator` plugin 是 Phase 2 的工作，plugin 程式碼不存在時加入 plugin 配置會導致啟動失敗。
+> 下方的 JSON 是 Phase 1 完整的 `openclaw.json`，直接使用即可。
+
 ```jsonc
 {
   // ═══ Agent 定義 ═══
@@ -44,7 +48,8 @@
         "skills": ["main-orchestrator"],
         "subagents": { "allowAgents": ["pm", "dev", "cicd"], "requireAgentId": true },
         "tools": {
-          "allow": ["read", "glob", "grep", "sessions_spawn", "sessions_send", "sessions_list", "message", "project_init"]
+          "allow": ["read", "glob", "grep", "sessions_spawn", "sessions_send", "sessions_list", "message"]
+          // Phase 2 完成後加入 "project_init"
         }
       },
       {
@@ -416,6 +421,10 @@ sessions_send({
 
 ## Step 3：建立 project-orchestrator Plugin
 
+> **此步驟屬於 Phase 2**，必須在 Step 1-2 驗證通過後才執行。
+> Plugin 程式碼和目錄建立完成後，才可在 `openclaw.json` 中加入 `plugins` 配置。
+> 加入時機：Plugin 程式碼寫好 → `openclaw gateway restart` → 驗證 `project_init` tool 可用。
+
 ### 3.1 目錄結構
 
 ```
@@ -509,12 +518,20 @@ project_init(projectName, description)
 
 按順序逐一驗證，每步通過後再進行下一步。
 
+### Phase 1 驗證（Step 1 + 2 完成後）
+
+> **Phase 1 目標**：4 個 Bot 上線，Main 能對話，Skill 載入正確。
+> 此時 `project_init` tool 尚不存在，專案創建功能在 Phase 2 實作。
+
 ### 5.1 基礎連線
 ```
-[ ] openclaw 啟動，Bot 上線
+[ ] openclaw gateway restart 成功，無 config error
+[ ] 4 個 Bot 都上線（Discord 中可見 4 個 Bot 在線）
 [ ] 在 #general 發送訊息，Main Agent 回應
 [ ] Main Agent 能進行日常對話
 ```
+
+### Phase 2 驗證（Step 3 完成後）
 
 ### 5.2 專案創建
 ```
