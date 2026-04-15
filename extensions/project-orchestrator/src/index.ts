@@ -176,6 +176,71 @@ export default definePluginEntry({
             ].join("\n"),
           );
 
+          // ═══ 2.5. Send Trigger Messages to Each Thread ═══════════════════════
+          // After creating threads, send a trigger message to each one to activate
+          // the bound bot session. This ensures sessions spawn automatically
+          // without requiring a human to manually send the first message.
+          //
+          // The gateway processes these incoming Discord events, which causes
+          // the thread-binding manager to lookup the binding (written in step 4)
+          // and spawn the subagent session for each bot.
+          //
+          // If the in-memory binding cache hasn't been updated yet when the
+          // gateway processes these messages, the sessions will spawn on the next
+          // gateway restart (bindings are persisted to thread-bindings.json).
+
+          const sendThreadMessage = async (threadId: string, content: string) => {
+            try {
+              await discordApi(mainToken, "POST", `/channels/${threadId}/messages`, { content });
+            } catch (err) {
+              // Non-fatal: session will spawn on next gateway restart
+              console.error(`[project-orchestrator] Failed to send trigger message to thread ${threadId}:`, err);
+            }
+          };
+
+          // PM trigger (User-PM thread): PM bot initializes with project info
+          await sendThreadMessage(
+            userPmThread.id,
+            [
+              `## 新專案：${projectName}`,
+              description ? `> ${description}` : "",
+              "",
+              `PM 工作區已就緒。等待用戶在 [User-PM] thread 提出需求。`,
+              "",
+              `### 通訊資訊`,
+              `- Dev session (PM-Dev thread): ${devSessionKey}`,
+              `- CICD session (Dev-CICD thread): ${cicdSessionKey}`,
+            ]
+              .filter(Boolean)
+              .join("\n"),
+          );
+
+          // Dev trigger (PM-Dev thread): Dev bot initializes
+          await sendThreadMessage(
+            pmDevThread.id,
+            [
+              `## 專案：${projectName}`,
+              "",
+              `Dev 工作區已就緒，等待 PM 派發任務。`,
+              "",
+              `### 通訊資訊`,
+              `- PM session key: ${pmSessionKey}`,
+            ].join("\n"),
+          );
+
+          // CICD trigger (Dev-CICD thread): CICD bot initializes
+          await sendThreadMessage(
+            devCicdThread.id,
+            [
+              `## 專案：${projectName}`,
+              "",
+              `CI/CD 工作區已就緒，等待 Dev 派發建置請求。`,
+              "",
+              `### 通訊資訊`,
+              `- Dev session key: ${devSessionKey}`,
+            ].join("\n"),
+          );
+
           // ═══ 3. Build Session Keys ══════════════════════════════════
           // Format: agent:<agentId>:discord:<accountId>:channel:<threadId>
           const pmSessionKey = `agent:pm:discord:pm:channel:${userPmThread.id}`;
