@@ -12,7 +12,7 @@
 
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 import type { OpenClawPluginToolFactory } from "openclaw/plugin-sdk/core";
-import { spawn } from "node:child_process";
+import { exec } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
@@ -200,16 +200,12 @@ export default definePluginEntry({
           };
 
           // ═══ 2.6. Trigger Gateway Restart (Background) ══════════════════════
-          // After persisting bindings, spawn a detached background restart.
-          // This ensures the gateway reloads the new thread-bindings.json and
-          // spawns subagent sessions for all three bots immediately.
-          // The restart runs detached so it doesn't block the tool response.
+          // After persisting bindings, use setsid + background bash to fully detach
+          // the restart process into its own session. This survives SIGTERM from
+          // the gateway restart itself (unlike node spawn with detached:true).
           const restartScript = path.join(os.homedir(), ".openclaw", "restart-gateway.sh");
           try {
-            spawn("bash", [restartScript], {
-              detached: true,
-              stdio: "ignore",
-            }).unref();
+            exec(`setsid bash "${restartScript}" </dev/null >/dev/null 2>&1 &`);
           } catch (err) {
             console.error("[project-orchestrator] Failed to spawn gateway restart:", err);
           }
