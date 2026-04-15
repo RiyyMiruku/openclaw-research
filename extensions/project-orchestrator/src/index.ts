@@ -3,16 +3,14 @@
 // Registers the `project_init` tool which:
 //   1. Creates a Discord Forum Channel via Discord REST API
 //   2. Creates 3 threads via Discord REST API
-//   3. Returns session keys for pm/dev/cicd agents
+//   3. Persists thread bindings to disk
+//   4. Returns session keys for pm/dev/cicd agents
 //
-// Key API limitation (confirmed via SDK source):
-//   - OpenClawPluginApi has NO .discord property
-//   - openclaw/plugin-sdk/discord is NOT accessible from external plugins
-//   - Direct fetch() to Discord REST API is the reliable approach
+// NOTE: Trigger messages and gateway restart are handled by the main-orchestrator
+// SKILL (agentic), not here. This plugin only sets up Discord infrastructure.
 
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 import type { OpenClawPluginToolFactory } from "openclaw/plugin-sdk/core";
-import { exec } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
@@ -113,12 +111,6 @@ export default definePluginEntry({
             forumPayload.topic = String(description);
           }
 
-          // Debug: verify payload before sending
-          const serialized = JSON.stringify(forumPayload);
-          if (!serialized.includes("name")) {
-            throw new Error(`DEBUG: name field missing from payload: ${serialized}`);
-          }
-
           const forumChannel = await discordApi(
             mainToken,
             "POST",
@@ -177,82 +169,6 @@ export default definePluginEntry({
             ].join("\n"),
           );
 
-          // ═══ 2.5. Send Trigger Messages to Each Thread ═══════════════════════
-          // After creating threads, send a trigger message to each one to activate
-          // the bound bot session. This ensures sessions spawn automatically
-          // without requiring a human to manually send the first message.
-          //
-          // The gateway processes these incoming Discord events, which causes
-          // the thread-binding manager to lookup the binding (written in step 4)
-          // and spawn the subagent session for each bot.
-          //
-          // If the in-memory binding cache hasn't been updated yet when the
-          // gateway processes these messages, the sessions will spawn on the next
-          // gateway restart (bindings are persisted to thread-bindings.json).
-
-          const sendThreadMessage = async (threadId: string, content: string) => {
-            try {
-              await discordApi(mainToken, "POST", `/channels/${threadId}/messages`, { content });
-            } catch (err) {
-              // Non-fatal: session will spawn on next gateway restart
-              console.error(`[project-orchestrator] Failed to send trigger message to thread ${threadId}:`, err);
-            }
-          };
-
-          // ═══ 2.6. Trigger Gateway Restart (Background) ══════════════════════
-          // After persisting bindings, use setsid + background bash to fully detach
-          // the restart process into its own session. This survives SIGTERM from
-          // the gateway restart itself (unlike node spawn with detached:true).
-          const restartScript = path.join(os.homedir(), ".openclaw", "restart-gateway.sh");
-          try {
-            exec(`setsid bash "${restartScript}" </dev/null >/dev/null 2>&1 &`);
-          } catch (err) {
-            console.error("[project-orchestrator] Failed to spawn gateway restart:", err);
-          }
-
-          // PM trigger (User-PM thread): PM bot initializes with project info
-          await sendThreadMessage(
-            userPmThread.id,
-            [
-              `## 新專案：${projectName}`,
-              description ? `> ${description}` : "",
-              "",
-              `PM 工作區已就緒。等待用戶在 [User-PM] thread 提出需求。`,
-              "",
-              `### 通訊資訊`,
-              `- Dev session (PM-Dev thread): ${devSessionKey}`,
-              `- CICD session (Dev-CICD thread): ${cicdSessionKey}`,
-            ]
-              .filter(Boolean)
-              .join("\n"),
-          );
-
-          // Dev trigger (PM-Dev thread): Dev bot initializes
-          await sendThreadMessage(
-            pmDevThread.id,
-            [
-              `## 專案：${projectName}`,
-              "",
-              `Dev 工作區已就緒，等待 PM 派發任務。`,
-              "",
-              `### 通訊資訊`,
-              `- PM session key: ${pmSessionKey}`,
-            ].join("\n"),
-          );
-
-          // CICD trigger (Dev-CICD thread): CICD bot initializes
-          await sendThreadMessage(
-            devCicdThread.id,
-            [
-              `## 專案：${projectName}`,
-              "",
-              `CI/CD 工作區已就緒，等待 Dev 派發建置請求。`,
-              "",
-              `### 通訊資訊`,
-              `- Dev session key: ${devSessionKey}`,
-            ].join("\n"),
-          );
-
           // ═══ 3. Build Session Keys ══════════════════════════════════
           // Format: agent:<agentId>:discord:<accountId>:channel:<threadId>
           const pmSessionKey = `agent:pm:discord:pm:channel:${userPmThread.id}`;
@@ -261,19 +177,16 @@ export default definePluginEntry({
 
           // ═══ 4. Persist Thread Bindings to disk ══════════════════════════
           // Write binding records to thread-bindings.json so bindings survive gateway restarts.
-          // Key format: "accountId:threadId"
-          // Record format: PersistedThreadBindingRecord (matches thread-bindings.types.ts)
+          // The main-orchestrator SKILL decides when to restart the gateway after creation.
           try {
             const openclawDir = process.env.OPENCLAW_CONFIG_DIR ?? path.join(os.homedir(), ".openclaw");
             const bindingsPath = path.join(openclawDir, "discord", "thread-bindings.json");
             const bindingsDir = path.dirname(bindingsPath);
 
-            // Ensure directory exists
             if (!fs.existsSync(bindingsDir)) {
               fs.mkdirSync(bindingsDir, { recursive: true });
             }
 
-            // Load existing bindings (keep existing records, add new ones)
             let payload: { version: number; bindings: Record<string, unknown> } = { version: 1, bindings: {} };
             if (fs.existsSync(bindingsPath)) {
               try {
@@ -323,9 +236,7 @@ export default definePluginEntry({
               },
             };
 
-            // Merge new bindings with existing ones
             payload.bindings = { ...payload.bindings, ...newBindings };
-
             fs.writeFileSync(bindingsPath, JSON.stringify(payload, null, 2), "utf-8");
           } catch (persistErr) {
             // Non-fatal: log but don't fail the tool
@@ -333,10 +244,6 @@ export default definePluginEntry({
           }
 
           // ═══ 5. Return Result ════════════════════════════════════════
-          // Thread Binding is handled automatically by
-          // threadBindings.spawnSubagentSessions and agent routing.
-          // No manual bindTarget() call needed.
-
           return {
             status: "ok",
             projectName,
