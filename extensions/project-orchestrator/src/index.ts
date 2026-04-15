@@ -12,6 +12,7 @@
 
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 import type { OpenClawPluginToolFactory } from "openclaw/plugin-sdk/core";
+import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
@@ -197,6 +198,21 @@ export default definePluginEntry({
               console.error(`[project-orchestrator] Failed to send trigger message to thread ${threadId}:`, err);
             }
           };
+
+          // ═══ 2.6. Trigger Gateway Restart (Background) ══════════════════════
+          // After persisting bindings, spawn a detached background restart.
+          // This ensures the gateway reloads the new thread-bindings.json and
+          // spawns subagent sessions for all three bots immediately.
+          // The restart runs detached so it doesn't block the tool response.
+          const restartScript = path.join(os.homedir(), ".openclaw", "restart-gateway.sh");
+          try {
+            spawn("bash", [restartScript], {
+              detached: true,
+              stdio: "ignore",
+            }).unref();
+          } catch (err) {
+            console.error("[project-orchestrator] Failed to spawn gateway restart:", err);
+          }
 
           // PM trigger (User-PM thread): PM bot initializes with project info
           await sendThreadMessage(
