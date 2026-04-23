@@ -1,0 +1,17 @@
+{
+  "id": "project-orchestrator",
+  "name": "Project Orchestrator",
+  "description": "自動建立專案 Forum Channel 和多 Agent 對話通道",
+  "enabledByDefault": true,
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "guildId": {
+        "type": "string",
+        "description": "Discord Server 的 Guild ID"
+      }
+    },
+    "required": ["guildId"]
+  }
+}

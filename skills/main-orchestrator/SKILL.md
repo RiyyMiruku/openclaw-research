@@ -25,109 +25,53 @@ project_init({ projectName: "<名稱>", description: "<描述>" })
 
 取得回傳：
 - `forumChannelId` — Forum Channel 的 Discord ID
-- `threads.userPm.sessionKey` — PM session key
-- `threads.pmDev.sessionKey` — Dev session key
-- `threads.devCicd.sessionKey` — CICD session key
+- `threads.userPm.threadId` — User-PM thread ID
+- `threads.pmDev.threadId` — PM-Dev thread ID
+- `threads.devCicd.threadId` — Dev-CICD thread ID
 
-### Step 2：Spawn 各 Agent Sessions
-對每個 Agent（pm、dev、cicd）執行 `sessions_spawn` 預先建立 session：
+### Step 2：引導用戶激活 Bot Sessions
+告知用戶需要手動到每個 thread @ 對應的 Bot 一次，觸發 Discord 層面的 binding 和 session spawn。
 
+回覆格式：
 ```
-sessions_spawn({
-  task: "你是 <agentName>，負責 <role>。等待來自 User-PM thread 的需求。",
-  label: "<projectName>-<agentId>",
-  runtime: "subagent",
-  agentId: "<agentId>",
-  sessionKey: "<sessionKey>",
-  mode: "session"
-})
-```
+✅ 專案「<名稱>」 Forum 已建立！
 
-範例（PM）：
-```
-sessions_spawn({
-  task: "你是 PM Agent，負責專案管理。等待用戶在 User-PM thread 提出需求。",
-  label: "測試系統-pm",
-  runtime: "subagent",
-  agentId: "pm",
-  sessionKey: "agent:pm:discord:pm:channel:123456789",
-  mode: "session"
-})
+請依序到以下 threads @ 對應的 Bot（一次性激活）：
+
+1. [User-PM] 專案討論 → @PM Bot
+   （點此跳轉：discord://...）
+
+2. [PM-Dev] 開發任務 → @Dev Bot
+   （點此跳轉：discord://...）
+
+3. [Dev-CICD] 建置測試 → @CICD Bot
+   （點此跳轉：discord://...）
+
+完成後告訴我，我會確認 sessions 已啟動。
 ```
 
-### Step 3：發送初始化訊息
-對每個 Agent session 發送 `sessions_send`：
+### Step 3：確認 Sessions 已啟動
+用戶完成 @ 以後，呼叫 `sessions_list` 確認各 Bot 的 session 已經建立。
 
+如果有 session 未啟動，調查原因（用戶可能沒 @ 對，或 Bot 還沒回應）。
+
+### Step 4：回報完成
+在 #general 發送完成訊息：
 ```
-sessions_send({
-  sessionKey: "<sessionKey>",
-  message: "<initMessage>",
-  timeoutSeconds: 30
-})
-```
-
-PM 的 initMessage（綁定到 [User-PM] thread）：
-```
-## 新專案：<projectName>
-
-<description>
-
-### 你的通訊資訊
-- 你的 session (User-PM thread): <pm-session-key>
-- Dev session (PM-Dev thread): <dev-session-key>
-- CICD session (Dev-CICD thread): <cicd-session-key>
-
-請等待用戶在 [User-PM] thread 提出需求後開始工作。
-```
-
-Dev 的 initMessage（綁定到 [PM-Dev] thread）：
-```
-## 專案：<projectName>
-
-Dev 工作區已就緒，等待 PM 派發任務。
-PM session key: <pm-session-key>
-CICD session key: <cicd-session-key>
-```
-
-CICD 的 initMessage（綁定到 [Dev-CICD] thread）：
-```
-## 專案：<projectName>
-
-CI/CD 工作區已就緒，等待 Dev 派發建置請求。
-Dev session key: <dev-session-key>
-```
-
-### Step 4：Gateway 重啟決策
-
-**重啟時機**：每次建立新專案後都應該重啟，確保 thread bindings 被載入、bot sessions 正確啟動。
-
-使用 `gateway` tool 重啟：
-```
-gateway({ action: "restart", note: "專案「<名稱>」初始化完成，重啟以載入新 bindings" })
-```
-
-### Step 5：向 Discord 回報結果
-
-在 #general 發送完成訊息（使用 `message` tool）：
-```
-✅ 專案「<名稱>」已建立！
+✅ 專案「<名稱>」啟動完成！
 
 📁 Forum: <forumChannelId>
-🧵 [User-PM] 專案討論 ← 請到這裡開始討論需求
-🧵 [PM-Dev] 開發任務
-🧵 [Dev-CICD] 建置測試
 
-⚙️ Gateway 正在重啟以啟動 Bot sessions，請稍後...
+🧵 [User-PM] 專案討論 — PM Bot 已上線
+🧵 [PM-Dev] 開發任務 — Dev Bot 已上線
+🧵 [Dev-CICD] 建置測試 — CICD Bot 已上線
+
+各 Bot sessions 已啟動，可以開始協作了。
 ```
 
-Gateway 重啟完成後，再到 Forum 的 [User-PM] thread 確認 Bot 已上線。
-
 ### 失敗處理
-
-如果任何步驟失敗：
-1. 移除已建立的 Discord 資源（使用 `message` 刪除或標記）
-2. 在 #general 回報失敗原因
-3. 建議用戶手動處理
+- 如果 `project_init` 失敗：回報錯誤，不繼續
+- 如果 sessions 未啟動：協助用戶檢查哪個 thread 的 @ 沒有生效
 
 ## 限制
 - 建立完專案後不再參與該專案的後續流程

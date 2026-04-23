@@ -1,0 +1,10 @@
+{
+  "name": "project-orchestrator",
+  "version": "0.1.0",
+  "description": "Auto-create project Forum channels and multi-agent dialogue threads",
+  "type": "module",
+  "main": "src/index.ts",
+  "openclaw": {
+    "extensions": ["./src/index.ts"]
+  }
+}
