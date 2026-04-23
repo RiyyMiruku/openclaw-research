@@ -2,18 +2,15 @@
 //
 // Registers the `project_init` tool which:
 //   1. Creates a Discord Forum Channel via Discord REST API
-//   2. Creates 3 threads via Discord REST API
-//   3. Persists thread bindings to disk
-//   4. Returns session keys for pm/dev/cicd agents
+//   2. Creates 3 threads via bindTarget (auto webhook + intro + persist)
+//   3. Bindings are persisted automatically via the manager
 //
 // NOTE: Trigger messages and gateway restart are handled by the main-orchestrator
 // SKILL (agentic), not here. This plugin only sets up Discord infrastructure.
 
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 import type { OpenClawPluginToolFactory } from "openclaw/plugin-sdk/core";
-import fs from "node:fs";
-import path from "node:path";
-import os from "node:os";
+import { createRequire } from "node:module";
 
 const DISCORD_API = "https://discord.com/api/v10";
 
@@ -57,6 +54,24 @@ function resolveToken(
   );
 }
 
+// Lazy singleton require for openclaw dist
+let _openclawRequire: ReturnType<typeof createRequire> | null = null;
+function getOpenclawRequire(): ReturnType<typeof createRequire> {
+  if (!_openclawRequire) {
+    // openclaw is installed at this known path when running in the gateway
+    const openclawDist = "/home/justin/.npm-global/lib/node_modules/openclaw/dist";
+    _openclawRequire = createRequire(openclawDist + "/index.js");
+  }
+  return _openclawRequire;
+}
+
+function getThreadBindingsExports() {
+  const req = getOpenclawRequire();
+  const openclawDir = "/home/justin/.npm-global/lib/node_modules/openclaw";
+  // thread-bindings-DGck9pdd.js: u=createThreadBindingManager, d=getThreadBindingManager
+  return req(openclawDir + "/dist/thread-bindings-DGck9pdd.js");
+}
+
 export default definePluginEntry({
   id: "project-orchestrator",
   name: "Project Orchestrator",
@@ -87,7 +102,9 @@ export default definePluginEntry({
         async execute(_toolCallId: any, params: any) {
           // Validate inputs
           if (!params?.projectName || typeof params.projectName !== "string") {
-            throw new Error(`Invalid projectName: ${JSON.stringify(params?.projectName)}, raw params: ${JSON.stringify(params)}`);
+            throw new Error(
+              `Invalid projectName: ${JSON.stringify(params?.projectName)}, raw params: ${JSON.stringify(params)}`,
+            );
           }
           const projectName = params.projectName;
           const description = params.description;
@@ -119,150 +136,86 @@ export default definePluginEntry({
           ) as { id: string };
           const forumChannelId = forumChannel.id;
 
-          // ═══ 2. Create 3 Threads in Forum ════════════════════════════
-          // Forum threads: POST /channels/{forumId}/threads
-          // Forum requires message.content as first post
+          // ═══ 2. Create 3 Threads via bindTarget ══════════════════════
+          // bindTarget will: create webhook, send introText, persist binding to disk
+          const { u: createThreadBindingManager } = getThreadBindingsExports();
+          const manager = createThreadBindingManager({
+            accountId: "main",
+            token: mainToken,
+            cfg: ctx.config,
+            persist: true,
+          });
 
-          const createForumThread = async (name: string, content: string) => {
-            return discordApi(
+          const makeIntroText = (label: string, agentId: string) =>
+            `Session for ${label} (${agentId}) is now active. Messages here go directly to this session.`;
+
+          const bindThread = async (
+            threadName: string,
+            agentId: string,
+            label: string,
+            targetSessionKeyBase: string,
+          ): Promise<{
+            threadId: string;
+            sessionKey: string;
+            name: string;
+          }> => {
+            // First create the thread via Discord REST
+            const thread = await discordApi(
               mainToken,
               "POST",
               `/channels/${forumChannelId}/threads`,
               {
-                name,
-                auto_archive_duration: 10080, // 7 days
-                message: { content },
+                name: threadName,
+                auto_archive_duration: 10080,
+                message: { content: makeIntroText(label, agentId) },
               },
             ) as { id: string };
+
+            const threadId = thread.id;
+            const realSessionKey = `${targetSessionKeyBase}${threadId}`;
+
+            // Now bind the thread with webhook + intro via manager
+            await manager.bindTarget({
+              threadId,
+              channelId: forumChannelId,
+              createThread: false, // already created above
+              agentId,
+              targetSessionKey: realSessionKey,
+              label,
+              introText: makeIntroText(label, agentId),
+              boundBy: "project-orchestrator",
+            });
+
+            return { threadId, sessionKey: realSessionKey, name: threadName };
           };
 
-          const userPmThread = await createForumThread(
-            "[User-PM] 專案討論",
-            [
-              `# 專案：${projectName}`,
-              description ? `> ${description}` : "",
-              "",
-              "📋 **用戶與 PM 討論區**",
-              "在此與 PM 溝通需求、確認方向、追蹤進度。",
-            ]
-              .filter(Boolean)
-              .join("\n"),
-          );
+          // Create all three thread bindings in parallel
+          const [userPmResult, pmDevResult, devCicdResult] = await Promise.all([
+            bindThread("[User-PM] 專案討論", "pm", "User-PM", `agent:pm:discord:pm:channel:`),
+            bindThread("[PM-Dev] 開發任務", "dev", "PM-Dev", `agent:dev:discord:dev:channel:`),
+            bindThread("[Dev-CICD] 建置測試", "cicd", "Dev-CICD", `agent:cicd:discord:cicd:channel:`),
+          ]);
 
-          const pmDevThread = await createForumThread(
-            "[PM-Dev] 開發任務",
-            [
-              `# 專案：${projectName}`,
-              "",
-              "💻 **PM 與 Dev 協作區**",
-              "PM 在此派發任務規格，Dev 在此回報開發進度。",
-            ].join("\n"),
-          );
-
-          const devCicdThread = await createForumThread(
-            "[Dev-CICD] 建置測試",
-            [
-              `# 專案：${projectName}`,
-              "",
-              "🔧 **Dev 與 CI/CD 協作區**",
-              "Dev 在此派發建置請求，CI/CD 在此回報測試結果。",
-            ].join("\n"),
-          );
-
-          // ═══ 3. Build Session Keys ══════════════════════════════════
-          // Format: agent:<agentId>:discord:<accountId>:channel:<threadId>
-          const pmSessionKey = `agent:pm:discord:pm:channel:${userPmThread.id}`;
-          const devSessionKey = `agent:dev:discord:dev:channel:${pmDevThread.id}`;
-          const cicdSessionKey = `agent:cicd:discord:cicd:channel:${devCicdThread.id}`;
-
-          // ═══ 4. Persist Thread Bindings to disk ══════════════════════════
-          // Write binding records to thread-bindings.json so bindings survive gateway restarts.
-          // The main-orchestrator SKILL decides when to restart the gateway after creation.
-          try {
-            const openclawDir = process.env.OPENCLAW_CONFIG_DIR ?? path.join(os.homedir(), ".openclaw");
-            const bindingsPath = path.join(openclawDir, "discord", "thread-bindings.json");
-            const bindingsDir = path.dirname(bindingsPath);
-
-            if (!fs.existsSync(bindingsDir)) {
-              fs.mkdirSync(bindingsDir, { recursive: true });
-            }
-
-            let payload: { version: number; bindings: Record<string, unknown> } = { version: 1, bindings: {} };
-            if (fs.existsSync(bindingsPath)) {
-              try {
-                const raw = JSON.parse(fs.readFileSync(bindingsPath, "utf-8"));
-                if (raw && typeof raw === "object" && "version" in raw && "bindings" in raw) {
-                  payload = raw as typeof payload;
-                }
-              } catch {
-                // File corrupt/invalid — start fresh
-              }
-            }
-
-            const nowMs = Date.now();
-            const newBindings: Record<string, unknown> = {
-              [`pm:${userPmThread.id}`]: {
-                threadId: userPmThread.id,
-                channelId: forumChannelId,
-                targetSessionKey: pmSessionKey,
-                accountId: "pm",
-                agentId: "pm",
-                targetKind: "acp",
-                boundBy: "project-orchestrator",
-                boundAt: nowMs,
-                lastActivityAt: nowMs,
-              },
-              [`dev:${pmDevThread.id}`]: {
-                threadId: pmDevThread.id,
-                channelId: forumChannelId,
-                targetSessionKey: devSessionKey,
-                accountId: "dev",
-                agentId: "dev",
-                targetKind: "acp",
-                boundBy: "project-orchestrator",
-                boundAt: nowMs,
-                lastActivityAt: nowMs,
-              },
-              [`cicd:${devCicdThread.id}`]: {
-                threadId: devCicdThread.id,
-                channelId: forumChannelId,
-                targetSessionKey: cicdSessionKey,
-                accountId: "cicd",
-                agentId: "cicd",
-                targetKind: "acp",
-                boundBy: "project-orchestrator",
-                boundAt: nowMs,
-                lastActivityAt: nowMs,
-              },
-            };
-
-            payload.bindings = { ...payload.bindings, ...newBindings };
-            fs.writeFileSync(bindingsPath, JSON.stringify(payload, null, 2), "utf-8");
-          } catch (persistErr) {
-            // Non-fatal: log but don't fail the tool
-            console.error("[project-orchestrator] Failed to persist thread bindings:", persistErr);
-          }
-
-          // ═══ 5. Return Result ════════════════════════════════════════
+          // ═══ 3. Return Result ════════════════════════════════════════
           return {
             status: "ok",
             projectName,
             forumChannelId,
             threads: {
               userPm: {
-                threadId: userPmThread.id,
-                sessionKey: pmSessionKey,
-                name: "[User-PM] 專案討論",
+                threadId: userPmResult.threadId,
+                sessionKey: userPmResult.sessionKey,
+                name: userPmResult.name,
               },
               pmDev: {
-                threadId: pmDevThread.id,
-                sessionKey: devSessionKey,
-                name: "[PM-Dev] 開發任務",
+                threadId: pmDevResult.threadId,
+                sessionKey: pmDevResult.sessionKey,
+                name: pmDevResult.name,
               },
               devCicd: {
-                threadId: devCicdThread.id,
-                sessionKey: cicdSessionKey,
-                name: "[Dev-CICD] 建置測試",
+                threadId: devCicdResult.threadId,
+                sessionKey: devCicdResult.sessionKey,
+                name: devCicdResult.name,
               },
             },
           };
