@@ -273,7 +273,7 @@ openclaw plugins list
 |------|------|------|
 | `plugin path not found` | `plugins.load.paths` 指向不存在的目錄 | 確認路徑正確，plugin 目錄存在 |
 | Tool 不在可用清單 | Agent `tools.allow` 未包含 | 加入 tool 名稱或 plugin ID |
-| `api.discord` undefined | `OpenClawPluginApi` 無 `.discord` 屬性 | 用 `fetch()` 直接呼叫 Discord REST API |
+| `api.discord` undefined | `OpenClawPluginApi` 無 `.discord` 屬性 | 用 `fetch()` 呼叫 Discord REST API，或 import `../../discord/runtime-api.js`（跨模組，實測可行但違反邊界規則） |
 | Plugin ID 不匹配 | `package.json` name ≠ `openclaw.plugin.json` id | 兩者必須一致 |
 | 使用 `@openclaw/` scope | 本地 plugin 不需要 npm scope | 移除 scope，直接用 `"my-plugin"` |
 | Tool 收到的參數是字串 | `execute(params)` 少了第一個 `toolCallId` 參數 | 改為 `execute(_toolCallId, params)` |

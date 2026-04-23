@@ -114,10 +114,14 @@ openclaw plugins list
         "name": "PM Agent",
         "identity": { "name": "PM", "emoji": "📋" },
         "model": { "primary": "claude-opus-4-6" },
-        "workspace": "./devprojects/pm-workspace",    // ~/.openclaw/devprojects/pm-workspace
+        "workspace": "./devprojects/pm-workspace",
         "thinkingDefault": "high",
         "skills": ["pm-workflow"],
         "subagents": { "allowAgents": ["dev"], "requireAgentId": true },
+        "memorySearch": {
+          "enabled": true,
+          "experimental": { "sessionMemory": true }
+        },
         "tools": {
           "allow": ["read", "write", "edit", "glob", "grep", "sessions_send", "sessions_list", "message"]
         }
@@ -127,10 +131,14 @@ openclaw plugins list
         "name": "Dev Agent",
         "identity": { "name": "Dev", "emoji": "💻" },
         "model": { "primary": "claude-sonnet-4-6" },
-        "workspace": "./devprojects/dev-workspace",   // ~/.openclaw/devprojects/dev-workspace
+        "workspace": "./devprojects/dev-workspace",
         "thinkingDefault": "medium",
         "skills": ["dev-workflow"],
         "subagents": { "allowAgents": ["cicd"], "requireAgentId": true },
+        "memorySearch": {
+          "enabled": true,
+          "experimental": { "sessionMemory": true }
+        },
         "tools": {
           "allow": ["read", "write", "edit", "exec", "glob", "grep", "sessions_send", "message"]
         }
@@ -140,7 +148,7 @@ openclaw plugins list
         "name": "CI/CD Agent",
         "identity": { "name": "CI/CD", "emoji": "🔧" },
         "model": { "primary": "claude-haiku-4-5" },
-        "workspace": "./devprojects/cicd-workspace",  // ~/.openclaw/devprojects/cicd-workspace
+        "workspace": "./devprojects/cicd-workspace",
         "thinkingDefault": "low",
         "skills": ["cicd-workflow"],
         "subagents": { "allowAgents": [], "requireAgentId": false },
@@ -152,6 +160,15 @@ openclaw plugins list
   },
 
   // ═══ 路由綁定 ═══
+  //
+  // 只需要 Main Bot 的靜態 binding。
+  // PM / Dev / CICD 的路由由 Thread Binding 動態處理（優先級高於靜態 binding）：
+  //   1. project_init 建立 Forum Channel + 3 Thread（REST API）
+  //   2. project_init 呼叫 autoBindSpawnedDiscordSubagent() 建立 Thread Binding
+  //   3. 之後該 thread 的所有訊息都路由到綁定的 agent
+  //
+  // 路由優先級：Thread Binding > 靜態 bindings[] > fallback
+  //
   "bindings": [
     {
       "agentId": "main",
@@ -165,7 +182,7 @@ openclaw plugins list
     },
     {
       "agentId": "main",
-      "comment": "main bot fallback",
+      "comment": "main bot fallback（無 thread binding 時的預設）",
       "match": { "channel": "discord", "accountId": "main", "guildId": "YOUR_GUILD_ID" }
     }
   ],
@@ -291,29 +308,36 @@ description: Main Agent 的日常對話與專案初始化工作流程
 ## 專案創建流程
 
 1. 從用戶訊息中解析：專案名稱、專案描述（可選）
-2. 呼叫 project_init tool：
+
+2. 呼叫 `project_init` tool（一次完成 Forum + 3 Threads + 3 Bindings）：
    ```
    project_init({ projectName: "<名稱>", description: "<描述>" })
    ```
-3. 從回傳結果取得：
-   - forumChannelId
-   - threads.userPm.sessionKey (PM 的 session key)
-   - threads.pmDev.sessionKey (Dev 的 session key)
-   - threads.devCicd.sessionKey (CICD 的 session key)
-4. 透過 sessions_send 初始化 PM：
+   → 回傳：
+   ```json
+   {
+     "forumChannelId": "...",
+     "threads": {
+       "userPm":  { "threadId": "...", "sessionKey": "agent:pm:discord:pm:channel:..." },
+       "pmDev":   { "threadId": "...", "sessionKey": "agent:dev:discord:dev:channel:..." },
+       "devCicd": { "threadId": "...", "sessionKey": "agent:cicd:discord:cicd:channel:..." }
+     }
+   }
+   ```
+
+3. 將 session key 傳遞給 PM（透過 sessions_send）：
    ```
    sessions_send({
-     sessionKey: threads.userPm.sessionKey,
-     message: "## 新專案初始化\n\n" +
-       "專案名稱：<名稱>\n" +
-       "專案描述：<描述>\n\n" +
-       "### 你的通訊資訊\n" +
-       "- 你的 session (User-PM thread): <pm-session-key>\n" +
-       "- Dev session (PM-Dev thread): <dev-session-key>\n" +
-       "- CICD session (Dev-CICD thread): <cicd-session-key>\n\n" +
-       "請等待用戶在 [User-PM] thread 提出需求後開始工作。"
+     sessionKey: <pm-session-key>,
+     message: "### 新專案：<名稱>\n" +
+       "- Dev session: <dev-session-key>\n" +
+       "- CICD session: <cicd-session-key>\n" +
+       "請等待用戶提出需求。"
    })
    ```
+
+4. 將 project-registry.json 更新（用 write tool）
+
 5. 在 #general 回覆用戶：
    ```
    ✅ 專案「<名稱>」已建立！
@@ -553,7 +577,7 @@ sessions_send({
 {
   "id": "project-orchestrator",
   "name": "Project Orchestrator",
-  "description": "自動建立專案 Forum Channel 和多 Agent 對話通道",
+  "description": "自動建立專案 Forum Channel + Thread + Thread Binding",
   "enabledByDefault": true,
   "config": {
     "guildId": {
@@ -577,15 +601,19 @@ sessions_send({
 
 ### 4.3 `src/index.ts` 完整程式碼
 
-> **重要 API 限制**（已踩坑確認）：
-> - `api.discord` **不存在** — `OpenClawPluginApi` 沒有 `.discord` 屬性
-> - `createThreadDiscord()` 和 `getThreadBindingManager()` 是 Discord extension 內部函數，外部 plugin 無法存取
-> - **正確做法**：使用 `fetch()` 直接呼叫 Discord REST API（`https://discord.com/api/v10/`）
-> - Bot token 從 `ctx.config` 或環境變數取得
+> **實作方案**：REST API 建立 Forum Channel + Thread，然後呼叫 Discord extension 的
+> `autoBindSpawnedDiscordSubagent()` 建立 Thread Binding。
+>
+> 此方案由實作 agent 驗證可行，解決了以下問題：
+> - Thread 位置正確（在 Forum Channel 內，非 #general）
+> - Thread Binding 明確建立（不依賴 `sessions_spawn` 的 hook 機制）
 
 ```typescript
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 import type { OpenClawPluginToolFactory } from "openclaw/plugin-sdk/core";
+// Discord extension 的 thread binding 函數
+// ⚠️ 跨模組 import — 違反 import boundary 規則，但實測可行
+import { autoBindSpawnedDiscordSubagent } from "../../discord/runtime-api.js";
 
 // ═══ Discord REST API 封裝 ═══
 
@@ -618,22 +646,34 @@ function resolveToken(
   config: Record<string, unknown> | undefined,
   accountId: string,
 ): string {
-  // 嘗試從 config 取得指定 account 的 token
   const discord = (config as any)?.channels?.discord;
   const account = discord?.accounts?.[accountId];
   const token = account?.token ?? discord?.token;
   if (token) return String(token);
-
-  // Fallback: 環境變數
   const envKey = `DISCORD_BOT_TOKEN_${accountId.toUpperCase()}`;
   const envToken = process.env[envKey] ?? process.env.DISCORD_BOT_TOKEN;
   if (envToken) return envToken;
+  throw new Error(`No Discord token for account "${accountId}".`);
+}
 
-  throw new Error(
-    `No Discord token found for account "${accountId}". ` +
-      `Set it in config (channels.discord.accounts.${accountId}.token) ` +
-      `or env (${envKey}).`,
-  );
+// ═══ Thread Binding 封裝 ═══
+
+async function bindDiscordThread(params: {
+  accountId: string;
+  threadId: string;
+  channelId: string;
+  agentId: string;
+  label: string;
+  childSessionKey: string;
+}) {
+  await autoBindSpawnedDiscordSubagent({
+    accountId: params.accountId,
+    threadId: params.threadId,
+    parentChannelId: params.channelId,
+    agentId: params.agentId,
+    label: params.label,
+    childSessionKey: params.childSessionKey,
+  });
 }
 
 // ═══ Plugin Entry ═══
@@ -641,133 +681,93 @@ function resolveToken(
 export default definePluginEntry({
   id: "project-orchestrator",
   name: "Project Orchestrator",
-  description: "自動建立專案 Forum Channel 和多 Agent 對話通道",
+  description: "自動建立專案 Forum Channel + Thread + Binding",
   register(api) {
     const guildId = (api.pluginConfig as any)?.guildId as string | undefined;
 
     api.registerTool(
       ((ctx) => ({
         name: "project_init",
-        description:
-          "建立新專案：創建 Discord Forum Channel + 3 個對話 Thread",
+        description: "建立新專案：Forum Channel + 3 個對話 Thread + Thread Binding",
         parameters: {
           type: "object" as const,
           properties: {
-            projectName: {
-              type: "string",
-              description: "專案名稱（例：RAG系統）",
-            },
-            description: {
-              type: "string",
-              description: "專案簡述",
-            },
+            projectName: { type: "string", description: "專案名稱" },
+            description: { type: "string", description: "專案簡述" },
           },
           required: ["projectName"],
         },
 
-        async execute(
-          _toolCallId: string,
-          rawParams: Record<string, unknown>,
-        ) {
+        async execute(_toolCallId: string, rawParams: Record<string, unknown>) {
           const projectName = String(rawParams.projectName ?? "");
-          const description = rawParams.description
-            ? String(rawParams.description)
-            : undefined;
+          const description = rawParams.description ? String(rawParams.description) : undefined;
           if (!projectName) throw new Error("projectName is required");
-          const guild =
-            guildId ?? (api.pluginConfig as any)?.guildId;
-          if (!guild) {
-            throw new Error(
-              "guildId not configured. Set plugins.entries.project-orchestrator.config.guildId",
-            );
-          }
 
-          // 使用 main bot 的 token（有 MANAGE_CHANNELS 權限）
-          const mainToken = resolveToken(
-            ctx.config as Record<string, unknown>,
-            "main",
-          );
+          const guild = guildId ?? (api.pluginConfig as any)?.guildId;
+          if (!guild) throw new Error("guildId not configured");
+
+          const mainToken = resolveToken(ctx.config as Record<string, unknown>, "main");
 
           // ═══ 1. 建立 Forum Channel ═══
-          // ChannelType.GuildForum = 15
-          const forumChannel = await discordApi(
-            mainToken,
-            "POST",
-            `/guilds/${guild}/channels`,
-            {
-              name: projectName,
-              type: 15,
-              topic: description ?? `專案：${projectName}`,
-            },
-          );
+          const forumChannel = await discordApi(mainToken, "POST", `/guilds/${guild}/channels`, {
+            name: projectName,
+            type: 15, // GuildForum
+            topic: description ?? `專案：${projectName}`,
+          });
           const forumChannelId = forumChannel.id;
 
-          // ═══ 2. 在 Forum 下建立 3 個 Thread ═══
-          // Forum thread = POST /channels/{forumId}/threads
-          // Forum 要求 message.content 作為首則訊息
+          // ═══ 2. 建立 3 個 Forum Thread ═══
+          const createThread = async (name: string, content: string) =>
+            discordApi(mainToken, "POST", `/channels/${forumChannelId}/threads`, {
+              name,
+              auto_archive_duration: 10080,
+              message: { content },
+            });
 
-          const createForumThread = async (
-            name: string,
-            content: string,
-          ) => {
-            return discordApi(
-              mainToken,
-              "POST",
-              `/channels/${forumChannelId}/threads`,
-              {
-                name,
-                auto_archive_duration: 10080, // 7 天
-                message: { content }, // Forum 必須有首則訊息
-              },
-            );
-          };
-
-          const userPmThread = await createForumThread(
+          const userPmThread = await createThread(
             "[User-PM] 專案討論",
-            `# 專案：${projectName}\n${description ? `> ${description}\n` : ""}\n📋 **用戶與 PM 討論區**\n在此與 PM 溝通需求、確認方向、追蹤進度。`,
+            `# ${projectName}\n📋 用戶與 PM 討論區`,
           );
-
-          const pmDevThread = await createForumThread(
+          const pmDevThread = await createThread(
             "[PM-Dev] 開發任務",
-            `# 專案：${projectName}\n\n💻 **PM 與 Dev 協作區**\nPM 在此派發任務規格，Dev 在此回報開發進度。`,
+            `# ${projectName}\n💻 PM 與 Dev 協作區`,
           );
-
-          const devCicdThread = await createForumThread(
+          const devCicdThread = await createThread(
             "[Dev-CICD] 建置測試",
-            `# 專案：${projectName}\n\n🔧 **Dev 與 CI/CD 協作區**\nDev 在此派發建置請求，CI/CD 在此回報測試結果。`,
+            `# ${projectName}\n🔧 Dev 與 CI/CD 協作區`,
           );
 
-          // ═══ 3. 構造 Session Key ═══
-          // 格式：agent:<agentId>:discord:<accountId>:channel:<threadId>
+          // ═══ 3. 建立 Thread Binding ═══
+          // 每個 thread 綁定到對應 agent 的 bot account
+          const pmKey = `agent:pm:discord:pm:channel:${userPmThread.id}`;
+          const devKey = `agent:dev:discord:dev:channel:${pmDevThread.id}`;
+          const cicdKey = `agent:cicd:discord:cicd:channel:${devCicdThread.id}`;
 
-          const pmSessionKey = `agent:pm:discord:pm:channel:${userPmThread.id}`;
-          const devSessionKey = `agent:dev:discord:dev:channel:${pmDevThread.id}`;
-          const cicdSessionKey = `agent:cicd:discord:cicd:channel:${devCicdThread.id}`;
+          await bindDiscordThread({
+            accountId: "pm", threadId: userPmThread.id,
+            channelId: forumChannelId, agentId: "pm",
+            label: `user-pm-${projectName}`, childSessionKey: pmKey,
+          });
+          await bindDiscordThread({
+            accountId: "dev", threadId: pmDevThread.id,
+            channelId: forumChannelId, agentId: "dev",
+            label: `pm-dev-${projectName}`, childSessionKey: devKey,
+          });
+          await bindDiscordThread({
+            accountId: "cicd", threadId: devCicdThread.id,
+            channelId: forumChannelId, agentId: "cicd",
+            label: `dev-cicd-${projectName}`, childSessionKey: cicdKey,
+          });
 
-          // ═══ 4. 回傳結果給 Agent ═══
-          // Thread Binding 由 openclaw 的 threadBindings.spawnSubagentSessions
-          // 和 agent routing 自動處理，不需要手動呼叫 bindTarget()
-
+          // ═══ 4. 回傳結果 ═══
           return {
             status: "ok",
             projectName,
             forumChannelId,
             threads: {
-              userPm: {
-                threadId: userPmThread.id,
-                sessionKey: pmSessionKey,
-                name: "[User-PM] 專案討論",
-              },
-              pmDev: {
-                threadId: pmDevThread.id,
-                sessionKey: devSessionKey,
-                name: "[PM-Dev] 開發任務",
-              },
-              devCicd: {
-                threadId: devCicdThread.id,
-                sessionKey: cicdSessionKey,
-                name: "[Dev-CICD] 建置測試",
-              },
+              userPm:  { threadId: userPmThread.id,  sessionKey: pmKey,   name: "[User-PM] 專案討論" },
+              pmDev:   { threadId: pmDevThread.id,   sessionKey: devKey,  name: "[PM-Dev] 開發任務" },
+              devCicd: { threadId: devCicdThread.id, sessionKey: cicdKey, name: "[Dev-CICD] 建置測試" },
             },
           };
         },
@@ -778,17 +778,18 @@ export default definePluginEntry({
 });
 ```
 
-> **API 存取方式對照**：
+> **踩坑紀錄**：
 >
-> | 方式 | 可用性 | 說明 |
-> |------|--------|------|
-> | `api.discord.*` | ❌ 不存在 | `OpenClawPluginApi` 沒有 `.discord` 屬性 |
-> | `import ... from "openclaw/plugin-sdk/discord"` | ❌ 不存在 | package.json exports 無此 subpath，且有 guardrail test 明確禁止 |
-> | `import ... from "../../discord/runtime-api.js"` | ⚠️ 可能可用 | 相對路徑 import（僅限同在 extensions/ 下的 plugin），違反 import boundary 規則 |
-> | `fetch("https://discord.com/api/v10/...")` | ✅ 可靠 | 直接 Discord REST API，不依賴任何內部 API |
+> | 嘗試 | 結果 | 原因 |
+> |------|------|------|
+> | `api.discord.rest.post()` | ❌ undefined | `OpenClawPluginApi` 無 `.discord` 屬性 |
+> | `sessions_send` 投遞到 Discord | ❌ 無法投遞 | `deliver: false` 硬編碼 |
+> | `sessions_spawn({ thread: true })` | ❌ thread 位置錯誤 | Thread 建在 #general 而非 Forum Channel |
+> | REST API + `autoBindSpawnedDiscordSubagent()` | ✅ 可行 | Thread 位置正確 + Binding 正確建立 |
 >
-> **本計畫使用 `fetch()` 方式**，這是最可靠且不違反模組邊界的做法。
-> Agent 的 plugin 如使用了其他 import 方式且可工作，不影響功能，但可能在 openclaw 升級時 break。
+> **最終方案**：`project_init` plugin 一次完成 Forum Channel + 3 Thread + 3 Binding。
+> `autoBindSpawnedDiscordSubagent` 透過跨模組 import 取得（`../../discord/runtime-api.js`）。
+> 此 import 違反 import boundary 規則，但實測可行。openclaw 升級時可能需要調整。
 
 ---
 
@@ -796,20 +797,14 @@ export default definePluginEntry({
 
 Plugin 程式碼就緒後，更新 `~/.openclaw/openclaw.json`：
 
-### 5.1 加入 plugin 路徑
+### 5.1 啟用 plugin 並設定 config
 
-```bash
-openclaw config set plugins.load.paths '["~/.openclaw/extensions/project-orchestrator"]'
-```
-
-或手動在 `openclaw.json` 中加入：
+Plugin 放在 `~/.openclaw/extensions/project-orchestrator/` 會被**自動發現**，
+只需要在 `openclaw.json` 中加入啟用和配置：
 
 ```jsonc
 {
   "plugins": {
-    "load": {
-      "paths": ["~/.openclaw/extensions/project-orchestrator"]
-    },
     "entries": {
       "project-orchestrator": {
         "enabled": true,
@@ -821,6 +816,14 @@ openclaw config set plugins.load.paths '["~/.openclaw/extensions/project-orchest
   }
 }
 ```
+
+> **三種 plugin 配置的區別**：
+>
+> | 配置 | 用途 | 何時需要 |
+> |------|------|----------|
+> | `plugins.entries.<id>` | 啟用 plugin + 設定 config | **必要** — 手動寫 |
+> | `plugins.load.paths` | 指定非標準位置的 plugin 路徑 | **僅在 plugin 不在 `~/.openclaw/extensions/` 時需要**（例如開發中的 plugin 在 `~/projects/my-plugin/`） |
+> | `plugins.installs.<id>` | 安裝追蹤紀錄（來源、版本、hash） | **不要手動寫** — 由 `openclaw plugins install` CLI 自動管理 |
 
 ### 5.2 更新 Main Agent 的 tool allowlist
 
@@ -856,6 +859,102 @@ openclaw gateway restart
 
 ---
 
+## Step 6：專案註冊表與 Session 保全
+
+### 6.1 專案註冊表
+
+openclaw 的 session metadata 不記錄「專案名稱」等業務資訊。
+如果 Discord thread 被刪除或 binding 過期，session 仍然存在但無法反推屬於哪個專案。
+
+**解法**：`project_init` 執行成功後，將專案資訊寫入一個 JSON 註冊表：
+
+檔案路徑：`~/.openclaw/devprojects/project-registry.json`
+
+```json
+{
+  "projects": {
+    "RAG系統": {
+      "createdAt": "2026-04-06T10:00:00Z",
+      "forumChannelId": "123456789",
+      "threads": {
+        "userPm": { "threadId": "111", "sessionKey": "agent:pm:discord:pm:channel:111" },
+        "pmDev":  { "threadId": "222", "sessionKey": "agent:dev:discord:dev:channel:222" },
+        "devCicd": { "threadId": "333", "sessionKey": "agent:cicd:discord:cicd:channel:333" }
+      }
+    },
+    "Auth重構": {
+      "createdAt": "2026-04-06T14:00:00Z",
+      "forumChannelId": "987654321",
+      "threads": { ... }
+    }
+  }
+}
+```
+
+> 此檔由 Main Agent 在 `project_init` 完成後寫入。
+> （project_init 一次回傳 forumChannelId + 所有 threadId + sessionKey）
+> Main Agent 和 PM 都可讀取此檔，用於：
+> - 列出所有專案及其 session key
+> - Thread 消失後仍可透過 sessionKey 存取歷史對話
+> - 專案狀態追蹤
+
+### 6.2 Thread Binding 續期
+
+Thread binding 有過期機制，但可以延長：
+
+| 方法 | 效果 |
+|------|------|
+| 自動續期 | 每次有訊息活動，`lastActivityAt` 自動更新，重設 idle 計時器 |
+| `setThreadBindingIdleTimeoutBySessionKey()` | 修改 idle timeout 時長 |
+| `setThreadBindingMaxAgeBySessionKey()` | 重設 max age 計時器（`boundAt` 重設為當前時間） |
+
+> 只要專案持續有訊息活動，idle timeout 不會觸發。
+> `maxAgeHours: 720`（30天）到期後需要手動或程式化續期。
+
+### 6.3 Binding 過期 vs Session 保留
+
+```
+Thread Binding 過期
+  │
+  ├── Thread 不再觸發 agent 回應
+  ├── Session transcript 保留（~/.openclaw/agents/{agentId}/sessions/）
+  ├── Memory 索引保留（~/.openclaw/memory/{agentId}.sqlite）
+  └── 專案註冊表保留（可透過 sessionKey 重新綁定）
+
+恢復方式：
+  1. 從 project-registry.json 取得 sessionKey
+  2. 建立新的 thread binding 到同一個 sessionKey
+  3. Agent 恢復完整對話歷史
+```
+
+### 6.4 Session 儲存結構
+
+```
+~/.openclaw/
+├── agents/
+│   ├── main/sessions/               ← Main 的 session 記錄
+│   ├── pm/sessions/                 ← PM 的所有專案 session
+│   │   ├── sessions.json            ← session 索引
+│   │   ├── {sessionId-1}.jsonl      ← 專案 A 的對話紀錄
+│   │   └── {sessionId-2}.jsonl      ← 專案 B 的對話紀錄
+│   ├── dev/sessions/
+│   └── cicd/sessions/
+├── memory/
+│   ├── pm.sqlite                    ← PM 跨專案記憶搜尋索引
+│   ├── dev.sqlite                   ← Dev 跨專案記憶搜尋索引
+│   └── (cicd 不需要 memorySearch)
+├── devprojects/
+│   └── project-registry.json        ← 專案註冊表（專案名 ↔ session 對照）
+└── discord/
+    └── thread-bindings.json         ← Thread ↔ Session 動態綁定
+```
+
+> **memorySearch 跨 session 行為**：PM 的 `sessionMemory: true` 會將所有專案的
+> session 內容索引到同一個 `pm.sqlite`。PM 在專案 A 的上下文中可以搜尋到專案 B 的記憶。
+> 對話上下文（transcript）仍然按 session 隔離。
+
+---
+
 ## Phase 2 驗證
 
 ### 驗證 Plugin 載入
@@ -868,10 +967,10 @@ openclaw gateway restart
 ### 驗證專案創建
 ```
 [ ] 在 #general 發送「@Main Bot 幫我創建專案，測試專案」
-[ ] Main 呼叫 project_init → Forum Channel「測試專案」已建立
+[ ] Main 呼叫 project_init → Forum Channel + 3 Thread + 3 Binding 一次建立
 [ ] Forum 下有 3 個 Thread：[User-PM]、[PM-Dev]、[Dev-CICD]
-[ ] 每個 Thread 有 introText 開場白
 [ ] Main 回覆包含 Forum 和 Thread 資訊
+[ ] project-registry.json 已寫入專案紀錄
 ```
 
 ### 驗證 Thread Binding 路由
@@ -914,9 +1013,10 @@ openclaw gateway restart
 | discord channels 表格空白 | Discord plugin 未啟用 | `openclaw config set plugins.entries.discord.enabled true` |
 | Forum 建立失敗 | Main Bot 缺少 `MANAGE_CHANNELS` 權限 | 在 Discord Developer Portal 重新設定權限 |
 | `project_init` tool 不在可用清單 | plugin 未載入 / tool 名稱不在 allowlist | 確認 plugin enabled + `tools.allow` 含 `"project_init"` |
-| Thread 中 Agent 不回應 | Thread Binding 未設定 / 已過期 | 檢查 `bindTarget()` 是否成功執行 |
+| Thread 中 Agent 不回應 | Thread Binding 未建立 / 已過期 | 確認 `autoBindSpawnedDiscordSubagent()` 成功執行 |
 | `sessions_send` 被拒絕 | 跨 Agent 通訊未開啟 | 確認 `agentToAgent.enabled: true` 和 `sessions.visibility: "all"` |
 | Agent 回應由錯誤 Bot 發送 | Session Key 的 accountId 不正確 | 檢查格式 `agent:<id>:discord:<account>:channel:<threadId>` |
 | 動態 Forum 無法被 Bot 監聽 | `groupPolicy` 不是 `"open"` | 設定 `groupPolicy: "open"` |
 | Thread Binding 過期 | `maxAgeHours` 太短 | 調大至 720（30天）或更長 |
+| `autoBindSpawnedDiscordSubagent` import 失敗 | openclaw 升級後路徑變更 | 檢查 `extensions/discord/runtime-api.js` 是否仍 export 此函數 |
 | exec 被 SIGTERM 中斷 | Agent 嘗試重啟 gateway | **Agent 禁止執行 gateway 管理命令** |
