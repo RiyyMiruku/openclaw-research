@@ -1,7 +1,12 @@
 # DC 自動化開發團隊 — 系統藍圖 v1.0
 
 > 建立日期：2026-04-15
-> 最后更新：2026-04-15
+> 最后更新：2026-04-23
+
+## 變更記錄
+- 2026-04-23：Finance workspace 移至 `.openclaw/finance-workspace/`（不在 projects/ 下了）
+         `workspace/` → `main-workspace/`（統一命名）
+         Skills 分散至各 agent 自己的 workspace/skills/ 底下
 
 ---
 
