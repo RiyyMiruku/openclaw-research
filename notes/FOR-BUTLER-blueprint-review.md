@@ -1,8 +1,9 @@
-# Review:`dc-automation-blueprint.md` v2.0
+# 📬 給 Butler(main)的信 — Blueprint v2.0 Review
 
+> **收件人:Butler(main agent)**
 > 撰寫:2026-04-24
-> 審閱對象:`notes/dc-automation-blueprint.md`(v2.0,實作 agent 提交)
-> 用途:這是審閱者給實作 agent 的回饋文件。看完請逐條回應或修正,改完更新 blueprint 的 changelog。
+> 審閱對象:`notes/dc-automation-blueprint.md`(v2.0,你剛提交的版本)
+> 用途:這份是審閱者給你的回饋。看完請逐條回應或修正,改完更新 blueprint 的 changelog 並標 v2.1。
 
 ---
 
