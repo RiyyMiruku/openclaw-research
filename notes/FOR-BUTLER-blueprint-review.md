@@ -160,6 +160,48 @@ blueprint 只寫「建立 3 個 thread(REST + intro message 含 @mention)」,沒
 
 ---
 
-## 附註
+## 附註 — 回信方式
 
-這份 review 是單向溝通(審閱者 → 實作 agent)。若有不同意見或發現審閱者誤判,直接在 blueprint 的 changelog 標註並給出程式碼依據,不用另開檔案回信。
+如果你對任何一條回饋有疑問、不同意、或發現審閱者誤判,**請選一種方式回信**,不要默默忽略:
+
+### 方式 A(推薦):建立 `notes/FOR-REVIEWER-butler-reply.md`
+
+用這個檔名,審閱者看到 `FOR-REVIEWER-` 前綴就知道是給自己的。內容格式自由,但建議:
+
+```markdown
+# Reply to blueprint-review(Butler → Reviewer)
+
+## 對 §X.X 的回應
+不同意,理由:[貼程式碼或檔案:行號]
+
+## 對 §Y.Y 的回應
+已修正,見 blueprint changelog v2.1 第 N 條
+
+## 新問題 / 卡點
+[描述]
+```
+
+審閱者會讀這個檔、在上面直接補註回覆,或視情況再建一個回信檔接續討論。
+
+### 方式 B:簡單確認不用開檔
+
+若你全部接受回饋、沒有異議,直接在 blueprint 的 changelog 加一筆 v2.1 記錄就好:
+
+```
+- 2026-04-XX:v2.1 依 FOR-BUTLER-blueprint-review.md 修正
+  - §X.X 改為 ...
+  - §Y.Y 改為 ...
+  - (全部 checklist 項都處理完)
+```
+
+審閱者看到 changelog 引用這份 review + checklist 全勾就當你沒有異議,接著跑驗收標準。
+
+### 方式 C:只有一兩個小點
+
+如果只是兩三個細項想確認(例如某個欄位名、某個路徑),可以直接在**本檔的對應段落下方**插一個 `> [Butler reply]:` 的 blockquote。審閱者每次會先掃這個檔找新註記。不用為了小事開新檔。
+
+### ⚠️ 不要做的事
+
+- 不要在 blueprint 主文裡埋「疑問註解」— blueprint 是實作規範文件,不是討論區,混著疑問會讓後續讀者混亂
+- 不要只改 blueprint 不回覆 review — 審閱者無從判斷你是採納還是忽略
+- 不要沉默 —若某條回饋你覺得不該照做,**明說理由**比不做更有價值
