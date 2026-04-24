@@ -274,6 +274,37 @@ WSL 環境中 `openclaw gateway restart` 被 SIGTERM 打斷。臨時解法：`ba
 
 ---
 
+### 4.5 `setBindingRecord` / `saveBindingsToDisk` 不是 manager 實例方法（✅ 已修復 2026-04-24）
+
+**問題**：實作時誤以為 `setBindingRecord()` 和 `saveBindingsToDisk()` 是 `createThreadBindingManager()` 回傳的 manager 實例方法，實際不是。
+
+**錯誤寫法**（會直接 runtime error）：
+
+```ts
+// ❌ manager 實例沒有這兩個方法
+manager.setBindingRecord(updated);
+manager.saveBindingsToDisk({ force: true });
+```
+
+**原因**：`createThreadBindingManager()` 回傳的 manager 實例只有 `accountId` / `getByThreadId` / `bindTarget` / `unbindThread` 等方法。`setBindingRecord` 和 `saveBindingsToDisk` 是**獨立的模組級導出**，位於 `thread-bindings.discord-api-WOO9VoBT.js`。
+
+**正確寫法**：直接 require 該 module，取用獨立的 top-level exports：
+
+```ts
+// ✅ 從 discord-api module 單獨 require 出來
+const discordApi = req(openclawDir + "/dist/thread-bindings.discord-api-WOO9VoBT.js");
+discordApi.setBindingRecord(updated);         // 對應 export 名稱 M
+discordApi.saveBindingsToDisk({ force: true }); // 對應 export 名稱 j
+```
+
+**通用原則**：openclaw 內部有兩類 API：
+- **Manager 實例方法**：如 `bindTarget`、`getByThreadId`、`unbindThread`。由 `createThreadBindingManager()` 回傳
+- **模組級獨立導出**：如 `setBindingRecord`、`saveBindingsToDisk`、`BINDINGS_BY_THREAD_ID`、`rememberRecentUnboundWebhookEcho`。需從對應 module 直接 import
+
+遇到 `manager.xxx is not a function` 類錯誤時，優先檢查該函式是否為 module-level export，而非 manager 方法。
+
+---
+
 ## 五、SKILL.md 實際路徑
 
 | Agent | SKILL.md 位置                                                       |
