@@ -8,6 +8,39 @@
 
 ## 1. 目標與範圍
 
+### 1.0 Agent 階層定位(必讀)
+
+**pm / dev / cicd 是與 main 同級的「頂層 agent」**,不是 subagent、不是 main 的下屬。它們:
+
+- 在 `cfg.agents.list` 中與 main 平行註冊
+- 各自擁有完整的 session 系統
+- 只在**職能(role / system prompt / tools allowlist)**上與 main 不同 — 它們是「自動開發專用」的 agent
+- Main 負責一般對話與專案生命週期管理(建立 / 列出 / 封存),pm/dev/cicd 負責產品規劃、實作、CI
+
+### 1.1 多專案 session 隔離(架構核心)
+
+每個 agent × 每個專案 = **獨立 session**,隔離鍵是 thread id。
+
+```
+專案 A (Forum: openclaw-foo)
+  🧵 pm-thread-AAA   → session: agent:pm:discord:<acct>:channel:AAA
+  🧵 dev-thread-BBB  → session: agent:dev:discord:<acct>:channel:BBB
+  🧵 cicd-thread-CCC → session: agent:cicd:discord:<acct>:channel:CCC
+
+專案 B (Forum: rag-system)
+  🧵 pm-thread-DDD   → session: agent:pm:discord:<acct>:channel:DDD  ← 與 AAA 完全獨立
+  🧵 dev-thread-EEE  → session: agent:dev:discord:<acct>:channel:EEE
+  🧵 cicd-thread-FFF → session: agent:cicd:discord:<acct>:channel:FFF
+```
+
+**這是 openclaw routing 的原生行為,不需要額外實作**:
+- Session key 由 `buildAgentSessionKey()` 組出 → 包含 channel/thread id
+- Thread-binding 把 thread-id → session-key 的映射寫下
+- 同一個 `agent:pm` 身份在不同 thread 被呼叫 = 不同 session = 不同 conversation history
+- pm 在專案 A 的上下文絕對不會污染 pm 在專案 B 的 session
+
+實作者不需要為「多專案隔離」寫任何特殊邏輯,只要正確套用 `buildAgentSessionKey()` 並確保 thread-binding 成功寫入即可。
+
 ### 要實作的行為
 
 - 使用者在**一般文字頻道**對 main bot 說「@main 建立專案 <name>」
@@ -31,28 +64,56 @@
 
 ## 2. 前置需求(實作前必須確認)
 
-### 2.1 `openclaw.json` 的 `agents.list` 必須註冊 pm / dev / cicd
+### 2.1 `openclaw.json` 的 `agents.list` 必須將 pm / dev / cicd 註冊為**頂層 agent**
 
-**這是最關鍵的前置**。[src/routing/resolve-route.ts:152-167](../src/routing/resolve-route.ts#L152-L167) 的 `pickFirstExistingAgentId()` 在 agent id 不在 `agents.list` 時會靜默 fallback 成預設 agent(通常 `main`)。雖然 runtime thread-binding 走的 code path 不經過這個函式,但:
+**這是最關鍵的前置**。pm / dev / cicd 與 main 同階,在 `agents.list` 中平行註冊為獨立條目,**不是** main 的 subagent、也不在 main 的 `subagents` 欄位裡。
+
+[src/routing/resolve-route.ts:152-167](../src/routing/resolve-route.ts#L152-L167) 的 `pickFirstExistingAgentId()` 在 agent id 不在 `agents.list` 時會靜默 fallback 成預設 agent(通常 `main`)。雖然 runtime thread-binding 走的 code path 不經過這個函式,但:
 
 - 靜態 binding 路徑會被污染
 - Agent session 要能真的啟動,對應 agent 仍需存在於 config
+- 若漏註冊,訊息會被接到 main,失去職能分工的意義
 
-範例設定:
+範例設定(**四個 top-level agent 並列**):
 
 ```jsonc
 {
   "agents": {
     "default": "main",
     "list": [
-      { "id": "main", "systemPrompt": "...", "tools": { "allow": ["message", "project_init", ...] } },
-      { "id": "pm",   "systemPrompt": "你是 PM...", "tools": { "allow": ["message", ...] } },
-      { "id": "dev",  "systemPrompt": "你是 Dev...", "tools": { "allow": ["message", "bash", "edit", ...] } },
-      { "id": "cicd", "systemPrompt": "你是 CICD...", "tools": { "allow": ["message", "bash", ...] } }
+      // main: 一般對話 + 專案管理工具
+      {
+        "id": "main",
+        "systemPrompt": "你是使用者的日常助理。當使用者要求建立專案時,呼叫 project_init。",
+        "tools": { "allow": ["message", "project_init", "project_list", ...] }
+      },
+      // pm: 產品規劃 / 需求分析 / 與使用者對談需求
+      {
+        "id": "pm",
+        "systemPrompt": "你是 PM agent。在此 thread 與使用者討論需求並拆分任務,透過 message tool 把規格送到 dev 的 thread。",
+        "tools": { "allow": ["message", ...] }
+      },
+      // dev: 實作 / 寫 code / 開 PR
+      {
+        "id": "dev",
+        "systemPrompt": "你是 Dev agent。依 PM 指示實作,透過 message tool 把完成的 PR 送到 cicd thread 驗證。",
+        "tools": { "allow": ["message", "bash", "edit", "read", "grep", ...] }
+      },
+      // cicd: 測試 / 建置 / 回報結果
+      {
+        "id": "cicd",
+        "systemPrompt": "你是 CI/CD agent。跑 build / test,把結果以 message 回報到 dev 或 pm thread。",
+        "tools": { "allow": ["message", "bash", ...] }
+      }
     ]
   }
 }
 ```
+
+**這四個 agent 之間沒有階層關係**,差異只有:
+- System prompt(職能指示)
+- Tools allowlist(權限範圍)
+- 使用者預期綁定到哪種 channel(main → 一般頻道;pm/dev/cicd → 各專案 Forum 下對應 thread)
 
 ### 2.2 三個 agent 的 tools allowlist 必須包含 `message`
 
@@ -381,7 +442,7 @@ Discord REST 會丟 429。現有的 `discord-api.ts` request helper 應已處理
 
 ## 9. 實作 checklist(給實作 agent 用)
 
-- [ ] 確認 `openclaw.json` 有註冊 pm / dev / cicd 三個 agent
+- [ ] 確認 `openclaw.json` 有**把 pm / dev / cicd 列為 top-level `agents.list` 條目**(與 main 並列,**不是** subagents)
 - [ ] 建立 `src/agents/tools/project-init-tool.ts`,實作 tool schema 與 handler
 - [ ] 採用 4.4 方案 B(先建 thread、再 bind)
 - [ ] session key 用 `buildAgentSessionKey()` 組,不手拼字串
