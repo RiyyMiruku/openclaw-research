@@ -1,4 +1,4 @@
-# DC 自動化開發團隊 — 系統藍圖 v2.0
+# DC 自動化開發團隊 — 系統藍圖 v2.1
 
 > 建立日期：2026-04-15
 > 最後更新：2026-04-24
@@ -8,15 +8,18 @@
 
 ## 變更記錄
 
-- 2026-04-24：v2.0 大幅更新
-  - 修正 session key 格式（實際為 4 段，buildAgentSessionKey 不帶 accountId）
-  - 確認 thread 命名（`pm` / `dev` / `cicd`）
-  - 加入「PM/Dev/CICD 是 top-level agent」聲明
-  - 新增 echo loop 防護機制（NO_REPLY guard）
-  - 更新綁定流程（Method B with buildAgentSessionKey）
-  - 確認 binding accountId 修復
-  - 移除過時的 sessions_send 雙向通訊假設，改用 message tool
-- 2026-04-23：Finance workspace 移至 finance-workspace/（不在 projects/ 下）
+- 2026-04-24：v2.1 依 `FOR-BUTLER-blueprint-review.md` 修正
+  - §1.5/§6.1/§6.2：`sessions_send` 全面移除，改為 `message` tool + target thread
+  - §7.2：`pm/dev/cicd` 的 `spawnSubagentSessions` 改為 `false`
+  - §3.4：intro 改 mention user/main，不 mention 自己（主防線）
+  - §4.2：NO_REPLY guard 降為第二道防線
+  - §3.1 Step 3：明寫 intro 由 main bot 代發
+  - 新增 §3.5：同名專案拒絕策略
+  - 新增 §3.6：部分失敗 cleanup 說明
+  - §2.2：補 `idleHours: 168` 設定來源
+  - §3.3：補 `resolveToken` 為 project-orchestrator 內部 helper
+- 2026-04-24：v2.0 大幅更新（見 v2.1 changelog 合併記錄）
+- 2026-04-23：Finance workspace 移至 finance-workspace/
 
 ---
 
@@ -38,7 +41,7 @@
 它們：
 
 - 在 `openclaw.json` 的 `agents.list` 中與 main 平行註冊
-- 各自擁有完整的 session 系統
+- 各自擁有完整的 ACP session 系統（不走 subagent spawn 路徑）
 - 只在**職能**上與 main 不同（system prompt、tools allowlist）
 - 訊息 routing 不會被當成 main 的 subagent 而 fallback
 
@@ -74,7 +77,7 @@ agent:<agentId>:discord:channel:<threadId>
 
 accountId 段只在 `dmScope === "per-account-channel-peer"` 時才會被加入。
 
-### 1.5 Agent 間 Transport 機制
+### 1.5 Agent 間 Transport 機制（方案 3）
 
 **不走 `sessions_send`（A2A RPC），改用 Discord thread 訊息傳遞**：
 
@@ -84,7 +87,7 @@ Dev → CICD：Dev 在 CICD thread 發訊息 → CICD 被喚醒
 Dev → PM：Dev 在 PM thread 發訊息 → PM 被喚醒
 ```
 
-每個 agent 用 `message` tool 指定 `target: "<threadId>"` 發話。
+每個 agent 用 `message` tool 指定 `target: "<threadId>"` 發話。Discord thread 是天然的 transport layer，訊息經過 webhook delivery 為 agent 喚起對應 session。
 
 ---
 
@@ -92,17 +95,34 @@ Dev → PM：Dev 在 PM thread 發訊息 → PM 被喚醒
 
 ### 2.1 Session 建立觸發條件
 
-Bot session **不是預先存在的**，需要：
+Bot session 由 thread-binding 機制在 binding path 上建立（**不走 subagent spawn**）：
 
-1. 在對應 Discord thread 發送訊息
-2. Bot 收到後自動 spawn session（`spawnSubagentSessions: true`）
-3. Session 建立後可接收 `sessions_send`
+1. 在對應 Discord thread 收到訊息
+2. Gateway 查 thread-bindings.json，找到 `targetSessionKey`
+3. `ensureConfiguredAcpBindingSession()` 在 binding path 上建立 ACP session
+4. Session 建立後可接收 `sessions_send`
 
-### 2.2 Idle 釋放行為
+### 2.2 Idle 行爲與設定來源
 
-Bot session 完成任務後進入 `done` 狀態。一段時間後（`idleHours: 168`）會釋放資源。此時 `sessions_send` 會 timeout。
+Bot session 完成任務後進入 `done` 狀態。Idle timeout 來自各 Discord account 的 `threadBindings.idleHours` 設定：
 
-**重新激活**：在對應 thread 發一條 Discord 訊息，Bot 就會重新 spawn session。
+```json
+"accounts": {
+  "pm": { "threadBindings": { "idleHours": 168 } }
+}
+```
+
+`idleHours: 168` = 7 天後釋放資源。**重新激活**：在對應 thread 發一條 Discord 訊息即可。
+
+### 2.3 驗證過的通訊路徑
+
+| 方向       | 工具                                   | 狀態 |
+| ---------- | -------------------------------------- | ---- |
+| Main → PM  | `sessions_send`                        | ✅   |
+| Main → Dev | `sessions_send`                        | ✅   |
+| PM → Dev   | `message` tool → target: dev-threadId  | ✅   |
+| Dev → CICD | `message` tool → target: cicd-threadId | ✅   |
+| Dev → PM   | `message` tool → target: pm-threadId   | ✅   |
 
 ---
 
@@ -113,12 +133,13 @@ Bot session 完成任務後進入 `done` 狀態。一段時間後（`idleHours: 
 1. Main agent 收到使用者「@main 建立專案 <name>」
 2. `project_init` tool 被呼叫，執行：
    - Step 1：建立 Forum channel（REST）
-   - Step 2：檢查同名 Forum（拒絕重名）
-   - Step 3：建立 3 個 thread（REST + intro message 含 @mention）
+   - Step 2：檢查同名 Forum（拒絕重名，見 §3.5）
+   - Step 3：建立 3 個 thread（REST + intro message）**，由 main bot 代發**
    - Step 4：呼叫 `buildAgentSessionKey()` 組正確 session key
    - Step 5：用各 agent 自己的 Discord account 建立 binding manager
    - Step 6：`bindTarget({ createThread: false, ... })` 寫入 binding
    - Step 7：回傳三個 thread 的連結
+   - Step 8：失敗時 cleanup（見 §3.6）
 
 ### 3.2 Session key 組法（已驗證正確）
 
@@ -151,10 +172,53 @@ const manager = createThreadBindingManager({
 
 若用 `"main"` 建立 manager，binding 會因為 `accountId` 不匹配而查不到，導致 routing fallback 到 main。
 
+**`resolveToken(config, agentId)`**：定義於 `extensions/project-orchestrator/src/index.ts`，從 `openclaw.json` 的 `channels.discord.accounts.<agentId>.token` 讀取。
+
 ### 3.4 project_init 初始訊息格式
 
+**主防線**：intro 由 main bot 代發，且**不 mention 自己**，只 mention 使用者：
+
 ```
-<@pm> 專案「**{projectName}**」已建立。這是 [User-PM] 溝通頻道，後續訊息將由 pm agent 處理。
+<@{userId}> 專案「**{projectName}**」已建立。PM 將在此 thread 接收你的需求討論。
+```
+
+這樣 PM bot 收到時，`allowBots: "mentions"` 判斷為「自己沒被 mention」，直接由 preflight drop，不會進入 LLM。
+
+（NO_REPLY guard 見 §4.2，作為第二道防線。）
+
+### 3.5 同名專案處理
+
+**策略：拒絕 + 明確錯誤訊息**
+
+```typescript
+const existingChannels = await discordApi(mainToken, "GET", `/guilds/${guild}/channels`);
+const duplicate = existingChannels.find((c) => c.type === 15 && c.name === projectName);
+if (duplicate) {
+  throw new Error(`Forum "${projectName}" 已存在（id: ${duplicate.id}），請換名稱或先封存舊專案。`);
+}
+```
+
+### 3.6 部分失敗 Cleanup
+
+建 Forum 後若 thread 或 binding 建立失敗，必須刪除已建資源避免孤兒 Forum：
+
+```typescript
+const cleanupFns: (() => Promise<void>)[] = [];
+try {
+  const forum = await discordApi(...);
+  cleanupFns.push(() => discordApi(mainToken, "DELETE", `/channels/${forum.id}`));
+
+  for (const agentId of ["pm", "dev", "cicd"]) {
+    const thread = await discordApi(...);
+    cleanupFns.push(() => discordApi(mainToken, "DELETE", `/channels/${thread.id}`));
+    // bindTarget 失敗時只刪 thread，不刪 Forum
+    const record = await manager.bindTarget(...);
+    if (!record) throw new Error(...);
+  }
+} catch (err) {
+  for (const fn of cleanupFns.reverse()) await fn().catch(() => {});
+  throw err;
+}
 ```
 
 ---
@@ -165,28 +229,21 @@ const manager = createThreadBindingManager({
 
 **問題**：`accountId` 被錯誤寫成 `"main"`，導致 routing fallback 到 main。
 
-**原因**：`project-orchestrator` 的 binding manager 用 `"main"` 建立，但 Discord event 是由各 agent 的 webhook 觸發，accountId 不匹配。
-
 **修復**：每個 agent 的 binding manager 用自己的 `accountId`（pm/dev/cicd）。
 
 ---
 
-### 4.2 Echo Loop 無防護（✅ 已修復 2026-04-24）
+### 4.2 Echo Loop（✅ 已修復）
 
-**問題**：PM 回覆自己的 kickoff 訊息後，被當成新輸入再次處理，形成無限迴圈。
+**問題**：PM 回覆自己的 kickoff 訊息後，形成無限迴圈。
 
-**原因**：
+**主防線**（§3.4）：intro 由 main bot 代發且不 mention 自己，PM 收到時 preflight 直接 drop。
 
-1. PM Bot 回覆到 thread 時，Discord 將該訊息顯示為「新訊息」
-2. 該訊息的 `sender_id` = PM Bot 自己
-3. `allowBots: "mentions"` 讓 Bot 吃到包含自己 mention 的訊息
-4. 再次回覆 → 又觸發 → 無限迴圈
-
-**修復**：在 `pm-workflow/SKILL.md` 加上 NO_REPLY guard：
+**第二道防線**（SKILL guard）：在 `pm-workflow/SKILL.md` 加上 NO_REPLY guard：
 
 ```
-## Guard
-若發現 sender_id 是自己，立即回 NO_REPLY，不再處理。
+## Guard — 收到以下狀況直接回 NO_REPLY
+若發現 sender_id 是自己（pm bot 的 ID），這是 echo，直接停止。
 ```
 
 ---
@@ -213,9 +270,7 @@ Binding 寫入 `~/.openclaw/discord/thread-bindings.json`，格式：
 
 ### 4.4 SIGTERM 問題（⚠️ 未部署）
 
-WSL 環境中 `openclaw gateway restart` 被 SIGTERM 打斷。修復位於研究副本，未部署到實際執行版本。
-
-臨時解法：`bash ~/.openclaw/restart-gateway.sh`
+WSL 環境中 `openclaw gateway restart` 被 SIGTERM 打斷。臨時解法：`bash ~/.openclaw/restart-gateway.sh`
 
 ---
 
@@ -233,18 +288,18 @@ WSL 環境中 `openclaw gateway restart` 被 SIGTERM 打斷。修復位於研究
 
 ### 6.1 PM Workflow
 
-- **收到用戶需求** → 拆分任務 → `sessions_send` 派發給 Dev
-- **收到 Dev 回報** → 更新進度 → 在 PM thread 回覆用戶
-- **Guard**：收到自己訊息（sender_id 是自己）→ `NO_REPLY`
+- **收到用戶需求** → 拆分任務 → `message` tool → target: dev-threadId
+- **收到 Dev 回報** → 更新進度 → `message` tool → target: pm-threadId（回覆用戶）
+- **Guard**：收到自己訊息 → `NO_REPLY`（第二道防線）
 
 ### 6.2 Dev Workflow
 
-- **收到 PM 任務** → 分析 → 實作 → commit + PR → `sessions_send` 派發 CICD
-- **收到 CICD 結果** → ✅通過 → `sessions_send` 回報 PM；❌失敗 → 修復後重派
+- **收到 PM 任務** → 分析 → 實作 → commit + PR → `message` tool → target: cicd-threadId
+- **收到 CICD 結果** → ✅通過 → `message` tool → target: pm-threadId；❌失敗 → 修復後重派
 
 ### 6.3 CICD Workflow
 
-- **收到 Dev 建置請求** → `exec` 跑 build/test → 回報結果給 Dev
+- **收到 Dev 建置請求** → `exec` 跑 build/test → `message` tool → target: dev-threadId（回報結果）
 - 不修改程式碼，只驗證和回報
 
 ---
@@ -275,13 +330,15 @@ WSL 環境中 `openclaw gateway restart` 被 SIGTERM 打斷。修復位於研究
     "defaultAccount": "main",
     "accounts": {
       "main": { "threadBindings": { "spawnSubagentSessions": false } },
-      "pm":   { "threadBindings": { "spawnSubagentSessions": true  } },
-      "dev":  { "threadBindings": { "spawnSubagentSessions": true  } },
-      "cicd": { "threadBindings": { "spawnSubagentSessions": true  } }
+      "pm":   { "threadBindings": { "spawnSubagentSessions": false } },
+      "dev":  { "threadBindings": { "spawnSubagentSessions": false } },
+      "cicd": { "threadBindings": { "spawnSubagentSessions": false } }
     }
   }
 }
 ```
+
+> **注意**：`spawnSubagentSessions: false` — pm/dev/cicd 走 top-level ACP binding session 機制，不走 subagent spawn 路徑。
 
 ---
 
@@ -296,4 +353,5 @@ WSL 環境中 `openclaw gateway restart` 被 SIGTERM 打斷。修復位於研究
 | Dev Skill         | `~/.openclaw/projects/dev-workspace/skills/dev-workflow/SKILL.md`   |
 | CICD Skill        | `~/.openclaw/projects/cicd-workspace/skills/cicd-workflow/SKILL.md` |
 | 實作規格          | `notes/project-init-implementation-spec.md`                         |
+| Review 來函       | `notes/FOR-BUTLER-blueprint-review.md`                              |
 | Restart Script    | `~/.openclaw/restart-gateway.sh`                                    |
